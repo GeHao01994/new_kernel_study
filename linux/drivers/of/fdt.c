@@ -964,18 +964,41 @@ u64 __init dt_mem_next_cell(int s, const __be32 **cellp)
 /*
  * early_init_dt_scan_memory - Look for and parse memory nodes
  */
+/*
+ * 我们以linux/arch/arm/boot/dts/mediatek/mt6592-evb.dts为例子
+ * 内存的起始地址为0x80000000,大小为0x40000000,即1G大小的内存空间.
+ *
+ * /dts-v1/;
+ * #include "mt6592.dtsi"
+ *
+ * / {
+ *	model = "mt6592 evb";
+ *	compatible = "mediatek,mt6592-evb", "mediatek,mt6592";
+ *
+ *	memory {
+ *		device_type = "memory";
+ *		reg = <0x80000000 0x40000000>;
+ *	};
+ * };
+ *
+ */
 int __init early_init_dt_scan_memory(void)
 {
 	int node, found_memory = 0;
 	const void *fdt = initial_boot_params;
 
 	fdt_for_each_subnode(node, fdt, 0) {
+		/* 拿到有device_type的节点 */
 		const char *type = of_get_flat_dt_prop(node, "device_type", NULL);
 		const __be32 *reg, *endp;
 		int l;
 		bool hotpluggable;
 
 		/* We are scanning "memory" nodes only */
+		/*
+		 * 如果type为memory，那么说明是内存节点
+		 * 这里只找内存节点，所以如果不是的话,那就continue
+		 */
 		if (type == NULL || strcmp(type, "memory") != 0)
 			continue;
 
@@ -1090,17 +1113,30 @@ void __init __weak early_init_dt_add_memory_arch(u64 base, u64 size)
 {
 	const u64 phys_offset = MIN_MEMBLOCK_ADDR;
 
+	/*
+	 * PAGE_SIZE - (base & ~PAGE_MASK) 也就是减去没有按页面对齐大小的那部分
+	 * 也就是那一页中所能容纳的剩余部分
+	 * 这里size不能小于它.
+	 */
 	if (size < PAGE_SIZE - (base & ~PAGE_MASK)) {
 		pr_warn("Ignoring memory block 0x%llx - 0x%llx\n",
 			base, base + size);
 		return;
 	}
 
+	/* 这里是把base用做PAGE_ALIGNED */
 	if (!PAGE_ALIGNED(base)) {
+		/*
+		 * 这边就是让base做PAGE_ALIGNED
+		 * 并且size减去那些没有PAGE_ALIGNED的部分
+		 */
 		size -= PAGE_SIZE - (base & ~PAGE_MASK);
 		base = PAGE_ALIGN(base);
 	}
+
+	 /* 然后让size做PAGE对齐 */
 	size &= PAGE_MASK;
+
 
 	if (base > MAX_MEMBLOCK_ADDR) {
 		pr_warn("Ignoring memory block 0x%llx - 0x%llx\n",

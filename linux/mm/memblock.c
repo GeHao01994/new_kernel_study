@@ -212,6 +212,20 @@ bool __init_memblock memblock_overlaps_region(struct memblock_type *type,
  *
  * Return:
  * Found address on success, 0 on failure.
+ *
+ * __memblock_find_range_bottom_up - 底部向上查找空闲区域的工具函数
+ * @start: 候选范围的起始地址
+ * @end: 候选范围的结束地址,可以是 %MEMBLOCK_ALLOC_ANYWHERE（任意位置)
+ *       或%MEMBLOCK_ALLOC_ACCESSIBLE(可访问的位置)
+ * @size: 需要查找的空闲区域的大小
+ * @align: 需要查找的空闲区域的对齐方式
+ * @nid: 需要查找的空闲区域所在的节点ID,%NUMA_NO_NODE 表示任意节点
+ * @flags: 根据内存属性从块中选择
+ *
+ * 该工具函数从 memblock_find_in_range_node() 被调用,以底部向上的方式查找空闲区域.
+ *
+ * 返回值:
+ * 成功时返回找到的地址,失败时返回0.
  */
 static phys_addr_t __init_memblock
 __memblock_find_range_bottom_up(phys_addr_t start, phys_addr_t end,
@@ -221,10 +235,27 @@ __memblock_find_range_bottom_up(phys_addr_t start, phys_addr_t end,
 	phys_addr_t this_start, this_end, cand;
 	u64 i;
 
+	/**
+	 * clamp - return a value clamped to a given range with strict typechecking
+	 * @val: current value
+	 * @lo: lowest allowable value
+	 * @hi: highest allowable value
+	 *
+	 * This macro does strict typechecking of @lo/@hi to make sure they are of the
+	 * same type as @val.  See the unnecessary pointer comparisons.
+	 *
+	 * clamp - 对给定范围内的值进行严格类型检查并返回该范围内的值
+	 * @val: 当前值
+	 * @lo: 允许的最低值
+	 * @hi: 允许的最高值
+	 * 这个宏对 @lo 和 @hi 进行严格的类型检查，以确保它们与 @val 的类型相同
+	 *
+	 * #define clamp(val, lo, hi) __careful_clamp(val, lo, hi)
+	 */
 	for_each_free_mem_range(i, nid, flags, &this_start, &this_end, NULL) {
 		this_start = clamp(this_start, start, end);
 		this_end = clamp(this_end, start, end);
-
+		/* 让start进行page_align */
 		cand = round_up(this_start, align);
 		if (cand < this_end && this_end - cand >= size)
 			return cand;
@@ -286,6 +317,20 @@ __memblock_find_range_top_down(phys_addr_t start, phys_addr_t end,
  *
  * Return:
  * Found address on success, 0 on failure.
+ *
+ * memblock_find_in_range_node - 在给定范围和节点内查找空闲区域
+ * @size: 要查找的空闲区域的大小
+ * @align: 要查找的空闲区域的对齐方式
+ * @start: 候选范围的起始地址
+ * @end: 候选范围的结束地址,可以是 %MEMBLOCK_ALLOC_ANYWHERE（任意位置）或
+ *	 %MEMBLOCK_ALLOC_ACCESSIBLE（可访问位置）
+ * @nid: 要查找的空闲区域所在的节点ID,%NUMA_NO_NODE 表示任意节点
+ * @flags: 根据内存属性从块中选择
+ *
+ * 在指定的范围和节点内查找大小为 @size 且对齐方式为 @align 的空闲区域.
+ *
+ * 返回值:
+ * 成功时返回找到的地址,失败时返回0.
  */
 static phys_addr_t __init_memblock memblock_find_in_range_node(phys_addr_t size,
 					phys_addr_t align, phys_addr_t start,
@@ -298,6 +343,7 @@ static phys_addr_t __init_memblock memblock_find_in_range_node(phys_addr_t size,
 		end = memblock.current_limit;
 
 	/* avoid allocating the first page */
+	/* 这里的第一页应该是被uboot传递给内核的那些给占用了 */
 	start = max_t(phys_addr_t, start, PAGE_SIZE);
 	end = max(start, end);
 
@@ -321,6 +367,18 @@ static phys_addr_t __init_memblock memblock_find_in_range_node(phys_addr_t size,
  *
  * Return:
  * Found address on success, 0 on failure.
+ *
+ * memblock_find_in_range - 在给定范围内查找空闲区域
+ * @start: 候选范围的起始地址
+ * @end: 候选范围的结束地址,可以是 %MEMBLOCK_ALLOC_ANYWHERE
+ *       或%MEMBLOCK_ALLOC_ACCESSIBLE
+ * @size: 要查找的空闲区域的大小
+ * @align: 要查找的空闲区域的对齐方式
+ *
+ * 在指定的范围内查找大小为 @size 且对齐方式为 @align 的空闲区域.
+ *
+ * 返回值:
+ * 成功时返回找到的地址,失败时返回0.
  */
 static phys_addr_t __init_memblock memblock_find_in_range(phys_addr_t start,
 					phys_addr_t end, phys_addr_t size,
@@ -406,6 +464,15 @@ void __init memblock_discard(void)
  *
  * Return:
  * 0 on success, -1 on failure.
+ *
+ * memblock_double_array - 将memblock区域数组的大小加倍
+ * @type: 正在加倍的区域数组所属的memblock类型
+ * @new_area_start: 需要避免重叠的内存范围的起始地址
+ * @new_area_size: 需要避免重叠的内存范围的大小
+ *
+ * 将@type区域数组的大小加倍。如果memblock正在为新的保留区域数组分配内存，
+ * 并且存在一个先前已分配的内存范围[@new_area_start, @new_area_start + @new_area_size]等待被保留，
+ * 确保用于新数组的内存不与该范围重叠。
  */
 static int __init_memblock memblock_double_array(struct memblock_type *type,
 						phys_addr_t new_area_start,
@@ -414,26 +481,36 @@ static int __init_memblock memblock_double_array(struct memblock_type *type,
 	struct memblock_region *new_array, *old_array;
 	phys_addr_t old_alloc_size, new_alloc_size;
 	phys_addr_t old_size, new_size, addr, new_end;
+	/* 看看slab是不是available了 */
 	int use_slab = slab_is_available();
 	int *in_slab;
 
 	/* We don't allow resizing until we know about the reserved regions
 	 * of memory that aren't suitable for allocation
+	 *
+	 * 在了解哪些内存保留区域不适合分配之前，我们不允许调整大小
 	 */
 	if (!memblock_can_resize)
 		panic("memblock: cannot resize %s array\n", type->name);
 
 	/* Calculate new doubled size */
+	/* 这里是乘以2 */
 	old_size = type->max * sizeof(struct memblock_region);
 	new_size = old_size << 1;
 	/*
 	 * We need to allocated new one align to PAGE_SIZE,
-	 *   so we can free them completely later.
+	 * so we can free them completely later.
+	 *
+	 * 我们需要分配一个新的,并且要与页面大小（PAGE_SIZE）对齐,
+	 * 这样我们之后才能完全释放它们
 	 */
 	old_alloc_size = PAGE_ALIGN(old_size);
 	new_alloc_size = PAGE_ALIGN(new_size);
 
-	/* Retrieve the slab flag */
+	/*
+	 * Retrieve the slab flag
+	 * 检索(或获取)Slab标志
+	 */
 	if (type == &memblock.memory)
 		in_slab = &memblock_memory_in_slab;
 	else
@@ -441,21 +518,31 @@ static int __init_memblock memblock_double_array(struct memblock_type *type,
 
 	/* Try to find some space for it */
 	if (use_slab) {
+		/* 通过kmalloc分配new_size */
 		new_array = kmalloc(new_size, GFP_KERNEL);
+		/* 获得new_array的物理地址 */
 		addr = new_array ? __pa(new_array) : 0;
 	} else {
-		/* only exclude range when trying to double reserved.regions */
+		/*
+		 * only exclude range when trying to double reserved.regions
+		 * 仅在尝试将reserved.regions加倍时才排除该范围
+		 */
 		if (type != &memblock.reserved)
 			new_area_start = new_area_size = 0;
 
+		/* 找到空闲满足条件的地址空间的起始地址 */
 		addr = memblock_find_in_range(new_area_start + new_area_size,
 						memblock.current_limit,
 						new_alloc_size, PAGE_SIZE);
+		/*
+		 * 如果没找到,那么重新从0到min(new_area_start, memblock.current_limit)开始找
+		 * 怕他还有
+		 */
 		if (!addr && new_area_size)
 			addr = memblock_find_in_range(0,
 				min(new_area_start, memblock.current_limit),
 				new_alloc_size, PAGE_SIZE);
-
+		 /* 拿到它的虚拟地址 */
 		new_array = addr ? __va(addr) : NULL;
 	}
 	if (!addr) {
@@ -464,6 +551,7 @@ static int __init_memblock memblock_double_array(struct memblock_type *type,
 		return -1;
 	}
 
+	/* 这边就是double的new_end */
 	new_end = addr + new_size - 1;
 	memblock_dbg("memblock: %s is doubled to %ld at [%pa-%pa]",
 			type->name, type->max * 2, &addr, &new_end);
@@ -472,16 +560,29 @@ static int __init_memblock memblock_double_array(struct memblock_type *type,
 	 * Found space, we now need to move the array over before we add the
 	 * reserved region since it may be our reserved array itself that is
 	 * full.
+	 *
+	 * 已找到空间,我们现在需要在添加保留区域之前移动数组,
+	 * 因为这可能是我们的保留数组本身已经满了
 	 */
+
 	memcpy(new_array, type->regions, old_size);
 	memset(new_array + type->max, 0, old_size);
+	/* 保留旧的type->regions */
 	old_array = type->regions;
+	/* 把新的new_array赋值给type->regions */
 	type->regions = new_array;
+	/* tpye->max乘以2 */
 	type->max <<= 1;
 
-	/* Free old array. We needn't free it if the array is the static one */
+	/*
+	 * Free old array. We needn't free it if the array is the static one
+	 * 如果数组是静态的,则无需释放旧数组;否则,需要释放旧数组.
+	 */
+
+	/* 如果是用的slab,那么就调用kfree来释放这段内存 */
 	if (*in_slab)
 		kfree(old_array);
+	/* 如果不是初始化的那段，那么就调用memblock_free来释放这段内存 */
 	else if (old_array != memblock_memory_init_regions &&
 		 old_array != memblock_reserved_init_regions)
 		memblock_free(old_array, old_alloc_size);
@@ -489,7 +590,12 @@ static int __init_memblock memblock_double_array(struct memblock_type *type,
 	/*
 	 * Reserve the new array if that comes from the memblock.  Otherwise, we
 	 * needn't do it
+	 *
+	 * 如果新数组来自memblock,则保留它.
+	 * 否则,我们无需这样做
 	 */
+
+	/* 把它放到memblock_reserve里面 */
 	if (!use_slab)
 		BUG_ON(memblock_reserve(addr, new_alloc_size));
 
@@ -505,30 +611,53 @@ static int __init_memblock memblock_double_array(struct memblock_type *type,
  * @start_rgn: start scanning from (@start_rgn - 1)
  * @end_rgn: end scanning at (@end_rgn - 1)
  * Scan @type and merge neighboring compatible regions in [@start_rgn - 1, @end_rgn)
+ *
+ * memblock_merge_regions - 合并相邻的兼容区域
+ * @type: 要扫描的memblock类型
+ * @start_rgn: 从(@start_rgn - 1)开始扫描
+ * @end_rgn: 在(@end_rgn - 1)结束扫描
+ * 扫描@type类型，并合并[@start_rgn - 1, @end_rgn)范围内的相邻兼容区域
  */
 static void __init_memblock memblock_merge_regions(struct memblock_type *type,
 						   unsigned long start_rgn,
 						   unsigned long end_rgn)
 {
 	int i = 0;
+	/* 如果给定了start_rgn,那么我们需要从start_rgn - 1扫描,看看前一个能不能和它合并 */
 	if (start_rgn)
 		i = start_rgn - 1;
+	/* end_rgn肯定是end_rgn和最后那个rgn的最小值啦 */
 	end_rgn = min(end_rgn, type->cnt - 1);
+	/* 这里就是从start_rgn - 1到end_rgn开始扫描了 */
 	while (i < end_rgn) {
+		/* 拿到对应的memblock_region */
 		struct memblock_region *this = &type->regions[i];
 		struct memblock_region *next = &type->regions[i + 1];
 
+		/* 这里先判断是不是连续的,然后在判断node是不是一样的，最后在判断flag是不是一样的 */
 		if (this->base + this->size != next->base ||
 		    memblock_get_region_node(this) !=
 		    memblock_get_region_node(next) ||
 		    this->flags != next->flags) {
+			/*
+			 * 如果this->base + this->size > next->base,那么就出错了啊
+			 * 怎么可能比下一个的base还大呢
+			 */
 			BUG_ON(this->base + this->size > next->base);
 			i++;
 			continue;
 		}
 
+		/*
+		 * 如果上面的判断都不成立,那么说明可以合并,那就开始呗
+		 * 让this和next合并成一块
+		 */
 		this->size += next->size;
-		/* move forward from next + 1, index of which is i + 2 */
+		/*
+		 * move forward from next + 1, index of which is i + 2
+		 *
+		 * 从下一个元素之后的元素(其索引为i+2)开始向前移动
+		 */
 		memmove(next, next + 1, (type->cnt - (i + 2)) * sizeof(*next));
 		type->cnt--;
 		end_rgn--;
@@ -546,6 +675,9 @@ static void __init_memblock memblock_merge_regions(struct memblock_type *type,
  *
  * Insert new memblock region [@base, @base + @size) into @type at @idx.
  * @type must already have extra room to accommodate the new region.
+ *
+ * 在类型 @type 的 @idx 位置插入新的内存块区域[@base, @base + @size).
+ * @type 必须已经有额外的空间来容纳这个新区域.
  */
 static void __init_memblock memblock_insert_region(struct memblock_type *type,
 						   int idx, phys_addr_t base,
@@ -556,6 +688,10 @@ static void __init_memblock memblock_insert_region(struct memblock_type *type,
 	struct memblock_region *rgn = &type->regions[idx];
 
 	BUG_ON(type->cnt >= type->max);
+	/*
+	 * 这里就是把rgn 移动到rgn + 1的位置上
+	 * 也就是往后移动一个位置,腾出位置给新来的
+	 */
 	memmove(rgn + 1, rgn, (type->cnt - idx) * sizeof(*rgn));
 	rgn->base = base;
 	rgn->size = size;
@@ -580,6 +716,10 @@ static void __init_memblock memblock_insert_region(struct memblock_type *type,
  *
  * Return:
  * 0 on success, -errno on failure.
+ *
+ * 将新的内存块区域[@base, @base + @size)添加到@type中.
+ * 新的区域允许与已存在的区域重叠 —— 重叠不会影响已存在的区域.
+ * 在添加之后，@type保证是最小的(所有相邻的兼容区域都将被合并)
  */
 static int __init_memblock memblock_add_range(struct memblock_type *type,
 				phys_addr_t base, phys_addr_t size,
@@ -591,10 +731,18 @@ static int __init_memblock memblock_add_range(struct memblock_type *type,
 	int idx, nr_new, start_rgn = -1, end_rgn;
 	struct memblock_region *rgn;
 
+	/* 如果size为0,那么直接返回0 */
 	if (!size)
 		return 0;
 
-	/* special case for empty array */
+	/*
+	 * special case for empty array
+	 * 空数组的特殊情况
+	 */
+	/*
+	 * 这里就是type->regions[0].size == 0的情况
+	 * 就把这一块设置为regions[0]
+	 */
 	if (type->regions[0].size == 0) {
 		WARN_ON(type->cnt != 0 || type->total_size);
 		type->regions[0].base = base;
@@ -612,6 +760,11 @@ static int __init_memblock memblock_add_range(struct memblock_type *type,
 	 * type->cnt * 2 + 1 is less than or equal to type->max, we know
 	 * that there is enough empty regions in @type, and we can insert
 	 * regions directly.
+	 *
+	 * 最坏的情况是新的范围与所有已存在的区域都重叠,
+	 * 这时我们需要在@type中增加type->cnt + 1个空区域.
+	 * 因此，如果type->cnt的两倍再加1小于或等于type->max,我们就知道@type中有足够的空区域,
+	 * 可以直接插入新的区域
 	 */
 	if (type->cnt * 2 + 1 <= type->max)
 		insert = true;
@@ -621,6 +774,9 @@ repeat:
 	 * The following is executed twice.  Once with %false @insert and
 	 * then with %true.  The first counts the number of regions needed
 	 * to accommodate the new area.  The second actually inserts them.
+	 *
+	 * 下面的操作会执行两次. 一次是将@insert设为%false(假),另一次是设为%true(真).
+	 * 第一次是为了计算容纳新区域所需的区域数量.第二次则是实际将这些新区域插入.
 	 */
 	base = obase;
 	nr_new = 0;
@@ -628,7 +784,15 @@ repeat:
 	for_each_memblock_type(idx, type, rgn) {
 		phys_addr_t rbase = rgn->base;
 		phys_addr_t rend = rbase + rgn->size;
-
+		/*
+		 * 这边就是说看有没有重叠部分
+		 *	rbase                      rend
+		 * (end)  ↓			    ↓ (base)
+		 *	   -------------------------
+		 * 	  |                         |
+		 *  	   -------------------------
+		 *
+		 */
 		if (rbase >= end)
 			break;
 		if (rend <= base)
@@ -636,12 +800,29 @@ repeat:
 		/*
 		 * @rgn overlaps.  If it separates the lower part of new
 		 * area, insert that portion.
+		 *
+		 * @rgn重叠. 如果它将新区域的较低部分分隔开，则插入该部分
+		 */
+
+		/*
+		 * 这种情况就是base确定，但是end不一定，有可能大于rend,有可能小于
+		 *	rbase                      rend
+		 * base   ↓			    ↓
+		 *	   -------------------------
+		 * 	  |                         |
+		 *  	   -------------------------
+		 *
+		 *
+		 * 对于这种情况，至少要多出一块,也就是向下多出一块
+		 * 从base->rbase
 		 */
 		if (rbase > base) {
 #ifdef CONFIG_NUMA
 			WARN_ON(nid != memblock_get_region_node(rgn));
 #endif
+			/* 如果两边的flags不相同,那么这里报个WARN */
 			WARN_ON(flags != rgn->flags);
+			/* 新块数目+1 */
 			nr_new++;
 			if (insert) {
 				if (start_rgn == -1)
@@ -652,11 +833,26 @@ repeat:
 						       flags);
 			}
 		}
-		/* area below @rend is dealt with, forget about it */
+		/*
+		 * area below @rend is dealt with, forget about it
+		 * @rend以下的区域已经处理过了，不用管它
+		 */
 		base = min(rend, end);
 	}
 
-	/* insert the remaining portion */
+	/*
+	 * insert the remaining portion
+	 * 插入剩余的部分
+	 */
+	/*
+	 * 这种情况就是end
+	 *	 rbase                      rend  end
+	 *        ↓			    ↓      ↓
+	 *	   -------------------------      -
+	 * 	  |                         |	   |
+	 *  	   -------------------------	  -
+	 *
+	 */
 	if (base < end) {
 		nr_new++;
 		if (insert) {
@@ -674,8 +870,14 @@ repeat:
 	/*
 	 * If this was the first round, resize array and repeat for actual
 	 * insertions; otherwise, merge and return.
+	 *
+	 * 如果这是第一轮,则调整数组大小并重复进行实际的插入操作；否则，进行合并并返回
 	 */
 	if (!insert) {
+		/*
+		 * 这里就是说如果cnt + nr_new > type->max
+		 * 那么重新为这个type分配空间,且大小为type->max * 2
+		 */
 		while (type->cnt + nr_new > type->max)
 			if (memblock_double_array(type, obase, size) < 0)
 				return -ENOMEM;
@@ -729,6 +931,7 @@ int __init_memblock memblock_add(phys_addr_t base, phys_addr_t size)
 	memblock_dbg("%s: [%pa-%pa] %pS\n", __func__,
 		     &base, &end, (void *)_RET_IP_);
 
+	/* 这里就是把这段内存添加到全局变量的memblock.memory中去 */
 	return memblock_add_range(&memblock.memory, base, size, MAX_NUMNODES, 0);
 }
 
