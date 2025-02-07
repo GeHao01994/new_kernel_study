@@ -985,6 +985,20 @@ bool __init_memblock memblock_validate_numa_coverage(unsigned long threshold_byt
  *
  * Return:
  * 0 on success, -errno on failure.
+ *
+ * memblock_isolate_range - 将给定范围隔离为不相交的内存块
+ * @type: 要隔离范围的内存块类型
+ * @base: 要隔离范围的起始地址
+ * @size: 要隔离范围的大小
+ * @start_rgn: 隔离区域起始位置的输出参数
+ * @end_rgn: 隔离区域结束位置的输出参数
+ * 遍历 @type 类型的内存块，并确保内存块区域不跨越由 [@base, @base + @size) 定义的边界。
+ * 跨越边界的区域将在边界处被拆分，这最多可能会创建两个额外的区域。
+ * 范围内第一个区域的索引将通过 *@start_rgn 返回，
+ * 而范围后第一个区域的索引将通过 *@end_rgn 返回。
+ *
+ * 返回值：
+ * 成功时返回 0，失败时返回 -errno。
  */
 static int __init_memblock memblock_isolate_range(struct memblock_type *type,
 					phys_addr_t base, phys_addr_t size,
@@ -996,10 +1010,14 @@ static int __init_memblock memblock_isolate_range(struct memblock_type *type,
 
 	*start_rgn = *end_rgn = 0;
 
+	/* 如果size为0,那么直接返回0 */
 	if (!size)
 		return 0;
 
-	/* we'll create at most two more regions */
+	/*
+	 * we'll create at most two more regions
+	 * 我们最多会再创建两个区域
+	 */
 	while (type->cnt + 2 > type->max)
 		if (memblock_double_array(type, base, size) < 0)
 			return -ENOMEM;
@@ -1008,26 +1026,42 @@ static int __init_memblock memblock_isolate_range(struct memblock_type *type,
 		phys_addr_t rbase = rgn->base;
 		phys_addr_t rend = rbase + rgn->size;
 
+		/* 这都是按地址大小排序的,如果rbase >=end了,那真可以break了 */
 		if (rbase >= end)
 			break;
+		 /* 如果rend <= base,就说明我还比你大,那就下一位呗 */
 		if (rend <= base)
 			continue;
 
+		/* 如果rbase比base小,那么说明在这里面 */
 		if (rbase < base) {
 			/*
 			 * @rgn intersects from below.  Split and continue
 			 * to process the next region - the new top half.
+			 *
+			 * rgn从下方相交.进行拆分,并继续处理下一个区域 - 即新的上半部分
 			 */
 			rgn->base = base;
+			/*
+			 * 那就让rgn->base = base,rgn->size -= base - rbase
+			 * type->total_size -= base - rbase
+			 */
 			rgn->size -= base - rbase;
 			type->total_size -= base - rbase;
+			/*
+			 * 这里就是把rbase以及 base - rbase大小区域的region
+			 * 插入到idx，然后其他的整体平移1个单位
+			 */
 			memblock_insert_region(type, idx, rbase, base - rbase,
 					       memblock_get_region_node(rgn),
 					       rgn->flags);
+		/* 如果说end小于rend */
 		} else if (rend > end) {
 			/*
 			 * @rgn intersects from above.  Split and redo the
 			 * current region - the new bottom half.
+			 *
+			 * 当上方有区域相交时. 拆分并重做当前区域 - 即新的下半部分.
 			 */
 			rgn->base = end;
 			rgn->size -= end - rbase;
@@ -1227,6 +1261,10 @@ int __init_memblock memblock_mark_nomap(phys_addr_t base, phys_addr_t size)
  * @size: the size of the region
  *
  * Return: 0 on success, -errno on failure.
+ *
+ * memblock_clear_nomap - 清除指定区域的 MEMBLOCK_NOMAP 标志.
+ * @base: 该区域的基地址(物理地址)
+ * @size: 该区域的大小
  */
 int __init_memblock memblock_clear_nomap(phys_addr_t base, phys_addr_t size)
 {
@@ -1993,6 +2031,14 @@ static phys_addr_t __init_memblock __find_max_addr(phys_addr_t limit)
 	 * translate the memory @limit size into the max address within one of
 	 * the memory memblock regions, if the @limit exceeds the total size
 	 * of those regions, max_addr will keep original value PHYS_ADDR_MAX
+	 *
+	 * 将内存@limit大小转换为内存memblock区域中的一个区域的最大地址,
+	 * 如果@limit超过了这些区域的总大小,则max_addr将保持其原始值PHYS_ADDR_MAX不变
+	 */
+
+	/*
+	 * 这里就是找出最大的物理地址
+	 * 满足这个限制(limit)
 	 */
 	for_each_mem_region(r) {
 		if (limit <= r->size) {
@@ -2043,7 +2089,19 @@ void __init memblock_cap_memory_range(phys_addr_t base, phys_addr_t size)
 	if (ret)
 		return;
 
-	/* remove all the MAP regions */
+	/*
+	 * remove all the MAP regions
+	 *
+	 *
+	 *
+	 * static inline bool memblock_is_nomap(struct memblock_region *m)
+	 * {
+	 *		return m->flags & MEMBLOCK_NOMAP;
+	 * }
+	 *
+	 * 这里的意思是如果映射了这块region,就把它拔出去? 之后可能会影响到内核映射吗
+	 * 因为paging_init马上就要触发了
+	 */
 	for (i = memblock.memory.cnt - 1; i >= end_rgn; i--)
 		if (!memblock_is_nomap(&memblock.memory.regions[i]))
 			memblock_remove_region(&memblock.memory, i);
@@ -2052,7 +2110,11 @@ void __init memblock_cap_memory_range(phys_addr_t base, phys_addr_t size)
 		if (!memblock_is_nomap(&memblock.memory.regions[i]))
 			memblock_remove_region(&memblock.memory, i);
 
-	/* truncate the reserved regions */
+	/*
+	 * truncate the reserved regions
+	 * 截断保留区域
+	 */
+
 	memblock_remove_range(&memblock.reserved, 0, base);
 	memblock_remove_range(&memblock.reserved,
 			base + size, PHYS_ADDR_MAX);
@@ -2065,9 +2127,13 @@ void __init memblock_mem_limit_remove_map(phys_addr_t limit)
 	if (!limit)
 		return;
 
+	/* 找到这个最大的物理地址 */
 	max_addr = __find_max_addr(limit);
 
-	/* @limit exceeds the total size of the memory, do nothing */
+	/*
+	 * @limit exceeds the total size of the memory, do nothing
+	 * 如果limit超过了内存的总大小,则不执行任何操作.
+	 */
 	if (max_addr == PHYS_ADDR_MAX)
 		return;
 

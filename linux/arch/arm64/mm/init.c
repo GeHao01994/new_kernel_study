@@ -184,8 +184,33 @@ static int __init early_mem(char *p)
 }
 early_param("mem", early_mem);
 
+/*
+ * 分析这段代码的时候我们用上面的文档中的例子
+ * AArch64 Linux memory layout with 4KB pages + 4 levels (48-bit)
+ * Start			End			Size		Use
+ * -----------------------------------------------------------------------
+ * 0000000000000000	0000ffffffffffff	 256TB		user
+ * ffff000000000000	ffff7fffffffffff	 128TB		kernel logical memory map
+ * [ffff600000000000	ffff7fffffffffff]	  32TB		[kasan shadow region]
+ * ffff800000000000	ffff80007fffffff	   2GB		modules
+ * ffff800080000000	fffffbffefffffff	 124TB		vmalloc
+ * fffffbfff0000000	fffffbfffdffffff	 224MB		fixed mappings (top down)
+ * fffffbfffe000000	fffffbfffe7fffff	   8MB		[guard region]
+ * fffffbfffe800000	fffffbffff7fffff	  16MB		PCI I/O space
+ * fffffbffff800000	fffffbffffffffff	   8MB		[guard region]
+ * fffffc0000000000	fffffdffffffffff	   2TB		vmemmap
+ * fffffe0000000000	ffffffffffffffff	   2TB		[guard region]
+ *
+ *
+ * #define VA_BITS_MIN			(VA_BITS) = 0xffff000000000000
+ * #define _PAGE_END(va)		(-(UL(1) << ((va) - 1))) = 0xffff800000000000
+ */
 void __init arm64_memblock_init(void)
 {
+	/*
+	 * 这里说的是线性区域的大小,等于0xffff800000000000 - 0xffff000000000000 = 0x800000000000
+	 * 和上面的kernel logical memory map是一样的
+	 */
 	s64 linear_region_size = PAGE_END - _PAGE_OFFSET(vabits_actual);
 
 	/*
@@ -195,6 +220,12 @@ void __init arm64_memblock_init(void)
 	 * that the placement of the ID map may be randomized, let's simply
 	 * limit the kernel's linear map to 51 bits as well if we detect this
 	 * configuration.
+	 *
+	 * 特殊情况: 在 nVHE 模式下运行KVM的52 位虚拟地址(VA)能力系统,
+	 * 可能会因为其身份映射(ID map)的放置位置,
+	 * 而在支持超过51位虚拟地址空间的线性映射方面受到限制.
+	 * 鉴于身份映射的放置位置可能是随机的,
+	 * 如果我们检测到这种配置,那么就简单地也将内核的线性映射限制在 51 位
 	 */
 	if (IS_ENABLED(CONFIG_KVM) && vabits_actual == 52 &&
 	    is_hyp_mode_available() && !is_kernel_in_hyp_mode()) {
@@ -202,15 +233,44 @@ void __init arm64_memblock_init(void)
 		linear_region_size = min_t(u64, linear_region_size, BIT(51));
 	}
 
-	/* Remove memory above our supported physical address size */
+	/*
+	 * Remove memory above our supported physical address size
+	 *
+	 * 移除超出我们支持的物理地址大小的内存
+	 * 看起来是移除1ULL << PHYS_MASK_SHIFT ~ ULLONG_MAX
+	 * 很正常,因为这里是物理地址啊,48位的寻址从0到1ULL << 48这么大的空间
+	 */
 	memblock_remove(1ULL << PHYS_MASK_SHIFT, ULLONG_MAX);
 
 	/*
 	 * Select a suitable value for the base of physical memory.
+	 * 为物理内存的基址选择一个合适的值
 	 */
+
+	 /*
+	  * lowest address
+	  *
+	  * phys_addr_t __init_memblock memblock_start_of_DRAM(void)
+	  * {
+	  *		return memblock.memory.regions[0].base;
+	  * }
+	  */
 	memstart_addr = round_down(memblock_start_of_DRAM(),
 				   ARM64_MEMSTART_ALIGN);
 
+	  /*
+	   * phys_addr_t __init_memblock memblock_end_of_DRAM(void)
+	   * {
+	   *		int idx = memblock.memory.cnt - 1;
+	   *
+	   *		return (memblock.memory.regions[idx].base + memblock.memory.regions[idx].size);
+	   * }
+	   */
+
+	/*
+	 * 如果memblock_end_of_DRAM - memstart_addr 大于linear_region_size,物理内存比这个线性映射区域还要大
+	 * 那么报个警告出来
+	 */
 	if ((memblock_end_of_DRAM() - memstart_addr) > linear_region_size)
 		pr_warn("Memory doesn't fit in the linear mapping, VA_BITS too small\n");
 
@@ -218,11 +278,22 @@ void __init arm64_memblock_init(void)
 	 * Remove the memory that we will not be able to cover with the
 	 * linear mapping. Take care not to clip the kernel which may be
 	 * high in memory.
+	 *
+	 * 移除我们无法通过线性映射覆盖的内存.
+	 * 注意不要裁剪掉可能位于内存高位的内核.
 	 */
+	/* 这边就是移除不是线性映射的区域 */
 	memblock_remove(max_t(u64, memstart_addr + linear_region_size,
 			__pa_symbol(_end)), ULLONG_MAX);
+
+	/* 如果memstart_addr + linear_region_size 比 memblock_end_of_DRAM()小 */
 	if (memstart_addr + linear_region_size < memblock_end_of_DRAM()) {
-		/* ensure that memstart_addr remains sufficiently aligned */
+		/*
+		 * ensure that memstart_addr remains sufficiently aligned
+		 * 确保 memstart_addr 保持足够的对齐
+		 */
+
+		/* 这是准备拿最后一块来做吗？ */
 		memstart_addr = round_up(memblock_end_of_DRAM() - linear_region_size,
 					 ARM64_MEMSTART_ALIGN);
 		memblock_remove(0, memstart_addr);
@@ -234,6 +305,23 @@ void __init arm64_memblock_init(void)
 	 * memory in the 48-bit addressable part of the linear region, i.e.,
 	 * we have to move it upward. Since memstart_addr represents the
 	 * physical address of PAGE_OFFSET, we have to *subtract* from it.
+	 *
+	 * 如果我们在一个不支持52位内核虚拟地址(VA)配置的系统上运行该配置,
+	 * 我们必须将可用的物理内存放置在线性区域的48位可寻址部分,即我们需要将其向上移动.
+	 * 由于memstart_addr表示PAGE_OFFSET的物理地址,我们需要从它那里减去一定的值
+	 */
+
+	/*
+	 * #define _PAGE_OFFSET(va)	(-(UL(1) << (va)))
+	 *
+	 * _PAGE_OFFSET(vabits_actual) - _PAGE_OFFSET(52)
+	 * 假设vabits_actual = 48
+	 *  _PAGE_OFFSET(48) - _PAGE_OFFSET（52）
+	 * 0x0xffff800000000000 - 0xffff000000000000
+	 *
+	 * 实际上这里应该是减去超过的部分
+	 *
+	 * 感觉这里应该是+才对吧？
 	 */
 	if (IS_ENABLED(CONFIG_ARM64_VA_BITS_52) && (vabits_actual != 52))
 		memstart_addr -= _PAGE_OFFSET(vabits_actual) - _PAGE_OFFSET(52);
@@ -242,9 +330,33 @@ void __init arm64_memblock_init(void)
 	 * Apply the memory limit if it was set. Since the kernel may be loaded
 	 * high up in memory, add back the kernel region that must be accessible
 	 * via the linear mapping.
+	 *
+	 * 如果设置了内存限制,则应用该限制.
+	 * 由于内核可能被加载到内存的高地址区域,因此需要加上必须通过线性映射访问的内核区域.
+	 */
+
+	/*
+	 * 这个memory_limit是可以通过启动参数来设置的
+	 *  static int __init early_mem(char *p)
+	 * {
+	 *	if (!p)
+	 *		return 1;
+	 *
+	 *	memory_limit = memparse(p, &p) & PAGE_MASK;
+	 *	pr_notice("Memory limited to %lldMB\n", memory_limit >> 20);
+	 *
+	 *		return 0;
+	 * }
+	 *
+	 * early_param("mem", early_mem);
+	 *
+	 * #define PHYS_ADDR_MAX	(~(phys_addr_t)0)
+	 *
+	 * 这里就是根据memory_limit来拔掉不在这范围之内的memblock
 	 */
 	if (memory_limit != PHYS_ADDR_MAX) {
 		memblock_mem_limit_remove_map(memory_limit);
+		/* 内核段的地址还是要保留呀 */
 		memblock_add(__pa_symbol(_text), (u64)(_end - _text));
 	}
 
@@ -253,8 +365,14 @@ void __init arm64_memblock_init(void)
 		 * Add back the memory we just removed if it results in the
 		 * initrd to become inaccessible via the linear mapping.
 		 * Otherwise, this is a no-op
+		 *
+		 * 如果移除内存会导致通过线性映射无法访问initrd,则重新添加刚刚移除的内存.
+		 * 否则,这是一个不执行任何操作(无操作)的步骤.
 		 */
+
+		/* 让base进行页面对齐 */
 		u64 base = phys_initrd_start & PAGE_MASK;
+		/* 同样,这里是要让phys_initrd_start + phys_initrd_size 页面对齐后 - base */
 		u64 size = PAGE_ALIGN(phys_initrd_start + phys_initrd_size) - base;
 
 		/*
@@ -264,29 +382,79 @@ void __init arm64_memblock_init(void)
 		 * initrd reasonably close to each other (i.e., within 32 GB of
 		 * each other) so that all granule/#levels combinations can
 		 * always access both.
+		 *
+		 * 只有当不会造成我们可通过线性映射访问的内存超出限制时,
+		 * 我们才能将 initrd 内存重新加入.
+		 * bootloader需要将内核和 initrd 合理地放置在彼此较近的位置
+		 * (即,彼此之间的距离在 32 GB 以内)
+		 * 以确保所有粒度/#级别组合始终能够访问这两者.这是启动加载器的责任.
 		 */
+
+		 /*
+		  * 如果在memblock_start_of_DRAM和memblock_start_of_DRAM() +
+		  * linear_region_size之外
+		  * 那就报个警告吧
+		  */
 		if (WARN(base < memblock_start_of_DRAM() ||
 			 base + size > memblock_start_of_DRAM() +
 				       linear_region_size,
 			"initrd not fully accessible via the linear mapping -- please check your bootloader ...\n")) {
 			phys_initrd_size = 0;
 		} else {
+			/* 把它加到memblock中去 */
 			memblock_add(base, size);
+			/*
+			 * 清楚nomap的flag
+			 */
 			memblock_clear_nomap(base, size);
+			/* 放到reserve中去 */
 			memblock_reserve(base, size);
 		}
 	}
 
+	/*
+	 * config RANDOMIZE_BASE
+	 * bool "Randomize the address of the kernel image"
+	 * select RELOCATABLE
+	 * help
+	 * Randomizes the virtual address at which the kernel image is
+	 * loaded, as a security feature that deters exploit attempts
+	 * relying on knowledge of the location of kernel internals.
+	 *
+	 * It is the bootloader's job to provide entropy, by passing a
+	 * random u64 value in /chosen/kaslr-seed at kernel entry.
+	 *
+	 * When booting via the UEFI stub, it will invoke the firmware's
+	 * EFI_RNG_PROTOCOL implementation (if available) to supply entropy
+	 * to the kernel proper. In addition, it will randomise the physical
+	 * location of the kernel Image as well.
+	 *
+	 * 随机化内核映像加载的虚拟地址,这是一种安全功能,可以阻止依赖于对内核内部结构位置的了解的攻击尝试.
+	 *
+	 * 引导加载程序的任务是提供随机性,通过在内核入口处的/chosen/kaslr-seed传递一个随机的 u64 值来实现.
+	 *
+	 * 当通过 UEFI 存根启动时,它将调用固件的 EFI_RNG_PROTOCOL 实现(如果可用)来为内核本身提供随机性.此外,它还会随机化内核映像的物理位置.
+	 *
+	 * If unsure, say N.
+	 */
 	if (IS_ENABLED(CONFIG_RANDOMIZE_BASE)) {
 		extern u16 memstart_offset_seed;
 
 		/*
 		 * Use the sanitised version of id_aa64mmfr0_el1 so that linear
 		 * map randomization can be enabled by shrinking the IPA space.
+		 *
+		 * 使用经过清理的id_aa64mmfr0_el1版本,以便通过缩小IPA空间来启用线性映射随机化.
 		 */
+
+		 /* 这里是获取PA的range,应该是48bit */
 		u64 mmfr0 = read_sanitised_ftr_reg(SYS_ID_AA64MMFR0_EL1);
 		int parange = cpuid_feature_extract_unsigned_field(
 					mmfr0, ID_AA64MMFR0_EL1_PARANGE_SHIFT);
+		 /*
+		  * linear_region_size = 0x800000000000 - 0x1000000000000
+		  *
+		  */
 		s64 range = linear_region_size -
 			    BIT(id_aa64mmfr0_parange_to_phys_shift(parange));
 
@@ -294,6 +462,9 @@ void __init arm64_memblock_init(void)
 		 * If the size of the linear region exceeds, by a sufficient
 		 * margin, the size of the region that the physical memory can
 		 * span, randomize the linear region as well.
+		 *
+		 * 如果线性区域的大小超过了物理内存所能覆盖的区域大小的一个足够大的幅度.
+		 * 那么也将对线性区域进行随机化处理
 		 */
 		if (memstart_offset_seed > 0 && range >= (s64)ARM64_MEMSTART_ALIGN) {
 			range /= ARM64_MEMSTART_ALIGN;
@@ -305,6 +476,9 @@ void __init arm64_memblock_init(void)
 	/*
 	 * Register the kernel text, kernel data, initrd, and initial
 	 * pagetables with memblock.
+	 *
+	 * 使用memblock注册kernel text, kernel data, initrd, and initial
+	 * pagetables.
 	 */
 	memblock_reserve(__pa_symbol(_stext), _end - _stext);
 	if (IS_ENABLED(CONFIG_BLK_DEV_INITRD) && phys_initrd_size) {
@@ -315,6 +489,7 @@ void __init arm64_memblock_init(void)
 
 	early_init_fdt_scan_reserved_mem();
 
+	/* 记录high_memory为最高的地址 */
 	high_memory = __va(memblock_end_of_DRAM() - 1) + 1;
 }
 
