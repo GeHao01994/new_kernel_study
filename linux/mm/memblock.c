@@ -112,6 +112,10 @@ static struct memblock_region memblock_reserved_init_regions[INIT_MEMBLOCK_RESER
 static struct memblock_region memblock_physmem_init_regions[INIT_PHYSMEM_REGIONS];
 #endif
 
+/*
+ * 这边应该说的是,分配出去的内存(也就是说正在用的内存都放到reserved里面)
+ * memory是个整体的,也就是系统中的所有内存
+ */
 struct memblock memblock __initdata_memblock = {
 	.memory.regions		= memblock_memory_init_regions,
 	.memory.max		= INIT_MEMBLOCK_MEMORY_REGIONS,
@@ -257,6 +261,8 @@ __memblock_find_range_bottom_up(phys_addr_t start, phys_addr_t end,
 		this_end = clamp(this_end, start, end);
 		/* 让start进行page_align */
 		cand = round_up(this_start, align);
+
+		/* 实际上这里的意思就是在start到end之间找到一块size大小的区域分配出去 */
 		if (cand < this_end && this_end - cand >= size)
 			return cand;
 	}
@@ -391,6 +397,7 @@ again:
 	ret = memblock_find_in_range_node(size, align, start, end,
 					    NUMA_NO_NODE, flags);
 
+	/* MEMBLOCK_MIRROR的意思是有镜像内存 */
 	if (!ret && (flags & MEMBLOCK_MIRROR)) {
 		pr_warn_ratelimited("Could not allocate %pap bytes of mirrored memory\n",
 			&size);
@@ -992,13 +999,13 @@ bool __init_memblock memblock_validate_numa_coverage(unsigned long threshold_byt
  * @size: 要隔离范围的大小
  * @start_rgn: 隔离区域起始位置的输出参数
  * @end_rgn: 隔离区域结束位置的输出参数
- * 遍历 @type 类型的内存块，并确保内存块区域不跨越由 [@base, @base + @size) 定义的边界。
- * 跨越边界的区域将在边界处被拆分，这最多可能会创建两个额外的区域。
- * 范围内第一个区域的索引将通过 *@start_rgn 返回，
- * 而范围后第一个区域的索引将通过 *@end_rgn 返回。
+ * 遍历 @type 类型的内存块,并确保内存块区域不跨越由 [@base, @base + @size) 定义的边界.
+ * 跨越边界的区域将在边界处被拆分，这最多可能会创建两个额外的区域.
+ * 范围内第一个区域的索引将通过 *@start_rgn 返回,
+ * 而范围后第一个区域的索引将通过 *@end_rgn 返回.
  *
- * 返回值：
- * 成功时返回 0，失败时返回 -errno。
+ * 返回值:
+ * 成功时返回 0,失败时返回 -errno.
  */
 static int __init_memblock memblock_isolate_range(struct memblock_type *type,
 					phys_addr_t base, phys_addr_t size,
@@ -1066,11 +1073,18 @@ static int __init_memblock memblock_isolate_range(struct memblock_type *type,
 			rgn->base = end;
 			rgn->size -= end - rbase;
 			type->total_size -= end - rbase;
+			/*
+			 * 注意这里有idx--,也就是说执行完毕后idx - 1
+			 */
 			memblock_insert_region(type, idx--, rbase, end - rbase,
 					       memblock_get_region_node(rgn),
 					       rgn->flags);
 		} else {
-			/* @rgn is fully contained, record it */
+			/*
+			 * @rgn is fully contained, record it
+			 * 实际上最后都会跑到这里,因为你上面有个idx--,那最后肯定是这一块了
+			 */
+			/* 记录这一块的位置 */
 			if (!*end_rgn)
 				*start_rgn = idx;
 			*end_rgn = idx + 1;
@@ -1249,6 +1263,18 @@ int __init_memblock memblock_mark_mirror(phys_addr_t base, phys_addr_t size)
  * memblock, the caller must inform kmemleak to ignore that memory
  *
  * Return: 0 on success, -errno on failure.
+ *
+ * memblock_mark_nomap - 使用MEMBLOCK_NOMAP标志标记一个内存区域.
+ * @base: 该区域的基物理地址
+ * @size: 该区域的大小
+ *
+ * 使用%MEMBLOCK_NOMAP标记的内存区域不会被添加到物理内存的直接映射中.
+ * 这些区域仍然会被内存映射所覆盖.
+ * 在内存映射中,代表NOMAP内存帧的struct page将被标记为PageReserved()(保留页).
+ *
+ * 注意: 如果正在被标记为%MEMBLOCK_NOMAP的内存是从memblock分配的,调用者必须通知kmemleak忽略那块内存.
+ *
+ * 返回值：成功时返回0，失败时返回-errno。
  */
 int __init_memblock memblock_mark_nomap(phys_addr_t base, phys_addr_t size)
 {
@@ -1671,6 +1697,23 @@ __next_mem_pfn_range_in_zone(u64 *idx, struct zone *zone,
  *
  * Return:
  * Physical address of allocated memory block on success, %0 on failure.
+ *
+ * memblock_alloc_range_nid - 分配启动内存块
+ * @size: 要分配的内存块的大小(以字节为单位)
+ * @align: 区域和内存块大小的对齐要求
+ * @start: 要分配的内存区域的起始边界(物理地址)
+ * @end: 要分配的内存区域的结束边界(物理地址)
+ * @nid: 要查找的空闲区域的节点ID,%NUMA_NO_NODE表示任何节点
+ * @exact_nid: 控制分配是否回退到其他节点
+ *
+ * 如果@end等于%MEMBLOCK_ALLOC_ACCESSIBLE,则分配将在由memblock.current_limit限制的内存区域内进行.
+ * 如果指定的节点无法满足所需的内存大小,并且@exact_nid为假,则分配将回退到系统中的任何节点.
+ *
+ * 对于具有内存镜像功能的系统,分配将首先尝试从启用了镜像的区域进行,然后再从任何内存区域重试.
+ * 此外,该函数使用kmemleak_alloc_phys为分配的启动内存块分配物理内存,这些内存块不会被报告为内存泄漏.
+ *
+ * 返回值:
+ * 成功时返回分配的内存块的物理地址,失败时返回%0(即0).
  */
 phys_addr_t __init memblock_alloc_range_nid(phys_addr_t size,
 					phys_addr_t align, phys_addr_t start,
@@ -1684,6 +1727,9 @@ phys_addr_t __init memblock_alloc_range_nid(phys_addr_t size,
 	 * Detect any accidental use of these APIs after slab is ready, as at
 	 * this moment memblock may be deinitialized already and its
 	 * internal data may be destroyed (after execution of memblock_free_all)
+	 *
+	 * 检测在slab准备就绪后对这些API的任何意外使用,因为此时memblock可能已经被反初始化,
+	 * 其内部数据可能已被销毁(在执行memblock_free_all之后)
 	 */
 	if (WARN_ON_ONCE(slab_is_available())) {
 		void *vaddr = kzalloc_node(size, GFP_NOWAIT, nid);
@@ -1698,19 +1744,24 @@ phys_addr_t __init memblock_alloc_range_nid(phys_addr_t size,
 	}
 
 again:
+	/* 这边就是在start和end区域找一块大小为size的内存 */
 	found = memblock_find_in_range_node(size, align, start, end, nid,
 					    flags);
+	/* 如果找到了,把它放到reserve区域里面 */
 	if (found && !memblock_reserve(found, size))
 		goto done;
 
+	/* 如果带了nid并且没有exact_nid(也就是说可以回退到其他节点),那么就在任意的nid中去找 */
 	if (numa_valid_node(nid) && !exact_nid) {
 		found = memblock_find_in_range_node(size, align, start,
 						    end, NUMA_NO_NODE,
 						    flags);
+		/* 如果找到了,把它放到reserve区域里面 */
 		if (found && !memblock_reserve(found, size))
 			goto done;
 	}
 
+	/* 如果flags是带了有内存镜像的,那么清除这个flag之后报个警告 */
 	if (flags & MEMBLOCK_MIRROR) {
 		flags &= ~MEMBLOCK_MIRROR;
 		pr_warn_ratelimited("Could not allocate %pap bytes of mirrored memory\n",
@@ -1724,6 +1775,8 @@ done:
 	/*
 	 * Skip kmemleak for those places like kasan_init() and
 	 * early_pgtable_alloc() due to high volume.
+	 *
+	 * 由于数据量大,对于诸如kasan_init()和early_pgtable_alloc()等位置,跳过kmemleak的内存泄漏检测.
 	 */
 	if (end != MEMBLOCK_ALLOC_NOLEAKTRACE)
 		/*
@@ -1731,6 +1784,9 @@ done:
 		 * leaks. This is because many of these blocks are
 		 * only referred via the physical address which is
 		 * not looked up by kmemleak.
+		 *
+		 * 通过memblock分配的内存块从不会被报告为内存泄漏.
+		 * 这是因为其中许多内存块仅通过物理地址进行引用,而kmemleak不会查找这些物理地址.
 		 */
 		kmemleak_alloc_phys(found, size, 0);
 
@@ -1740,6 +1796,9 @@ done:
 	 * guest.
 	 *
 	 * Accept the memory of the allocated buffer.
+	 *
+	 * 一些虚拟机平台,如Intel的TDX或AMD的SEV-SNP,要求内存必须在被客户机使用之前被接受.
+	 * 接受已分配缓冲区的内存.
 	 */
 	accept_memory(found, size);
 
@@ -1757,6 +1816,14 @@ done:
  *
  * Return: physical address of the allocated memory block on success,
  * %0 on failure.
+ *
+ * memblock_phys_alloc_range - 在指定范围内分配一个内存块
+ * @size: 要分配的内存块的大小(以字节为单位)
+ * @align: 区域和内存块大小的对齐要求
+ * @start: 要分配的内存区域的起始边界(物理地址)
+ * @end: 要分配的内存区域的结束边界(物理地址)
+ * 在@start和@end之间分配@size字节的内存。
+ * 返回值: 成功时返回分配的内存块的物理地址,失败时返回%0(即0).
  */
 phys_addr_t __init memblock_phys_alloc_range(phys_addr_t size,
 					     phys_addr_t align,
@@ -2076,14 +2143,17 @@ void __init memblock_cap_memory_range(phys_addr_t base, phys_addr_t size)
 	int start_rgn, end_rgn;
 	int i, ret;
 
+	/* 如果size为0,直接返回 */
 	if (!size)
 		return;
 
+	/* 如果memblock_memory的total_size为0,那么也直接返回*/
 	if (!memblock_memory->total_size) {
 		pr_warn("%s: No memory registered yet\n", __func__);
 		return;
 	}
 
+	/* 这里就是隔离出base到size区域的内存 */
 	ret = memblock_isolate_range(&memblock.memory, base, size,
 						&start_rgn, &end_rgn);
 	if (ret)
@@ -2099,8 +2169,7 @@ void __init memblock_cap_memory_range(phys_addr_t base, phys_addr_t size)
 	 *		return m->flags & MEMBLOCK_NOMAP;
 	 * }
 	 *
-	 * 这里的意思是如果映射了这块region,就把它拔出去? 之后可能会影响到内核映射吗
-	 * 因为paging_init马上就要触发了
+	 * 这里就是把超出这个界限的给remove掉
 	 */
 	for (i = memblock.memory.cnt - 1; i >= end_rgn; i--)
 		if (!memblock_is_nomap(&memblock.memory.regions[i]))
@@ -2115,6 +2184,7 @@ void __init memblock_cap_memory_range(phys_addr_t base, phys_addr_t size)
 	 * 截断保留区域
 	 */
 
+	/* 同理,reserved块也需要remove掉不在这个范围内的 */
 	memblock_remove_range(&memblock.reserved, 0, base);
 	memblock_remove_range(&memblock.reserved,
 			base + size, PHYS_ADDR_MAX);
@@ -2137,6 +2207,7 @@ void __init memblock_mem_limit_remove_map(phys_addr_t limit)
 	if (max_addr == PHYS_ADDR_MAX)
 		return;
 
+	/* 拔掉多余的,NOMAP的memblock */
 	memblock_cap_memory_range(0, max_addr);
 }
 

@@ -492,13 +492,21 @@ static void __init fdt_reserve_elfcorehdr(void)
  * This function grabs memory from early allocator for device exclusive use
  * defined in device tree structures. It should be called by arch specific code
  * once the early allocator (i.e. memblock) has been fully activated.
+ *
+ * early_init_fdt_scan_reserved_mem() - 创建保留内存区域
+ *
+ * 此函数从早期分配器中获取内存,供设备树结构中定义的设备专用.
+ * 它应由特定架构的代码调用,前提是早期分配器(即memblock)已完全激活.
  */
 void __init early_init_fdt_scan_reserved_mem(void)
 {
 	int n;
 	int res;
 	u64 base, size;
-
+	/*
+	 * 这一块只给DTS用,所以initial_boot_params传入的是dts扁平之后的虚拟地址
+	 * 如果没有,那么可以直接返回了
+	 */
 	if (!initial_boot_params)
 		return;
 
