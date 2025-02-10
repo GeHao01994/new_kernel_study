@@ -185,6 +185,16 @@ static inline void __next_physmem_range(u64 *idx, struct memblock_type *type,
  * @p_start: ptr to phys_addr_t for start address of the range, can be %NULL
  * @p_end: ptr to phys_addr_t for end address of the range, can be %NULL
  * @p_nid: ptr to int for nid of the range, can be %NULL
+ *
+ * __for_each_mem_range - 遍历从type_a类型中且不包括在type_b类型中的memblock区域.如果type_b为NULL,则只遍历type_a.
+ * @i: 循环变量，类型为u64
+ * @type_a: 要遍历的memblock类型的指针
+ * @type_b: 从遍历中排除的memblock类型的指针
+ * @nid: 节点选择器,对于所有节点使用%NUMA_NO_NODE
+ * @flags: 根据内存属性从区块中选择
+ * @p_start: 指向物理起始地址(phys_addr_t类型)的指针,可以为%NULL
+ * @p_end: 指向物理结束地址(phys_addr_t类型)的指针,可以为%NULL
+ * @p_nid: 指向范围节点ID(int类型)的指针,可以为%NULL
  */
 #define __for_each_mem_range(i, type_a, type_b, nid, flags,		\
 			   p_start, p_end, p_nid)			\
@@ -220,6 +230,11 @@ static inline void __next_physmem_range(u64 *idx, struct memblock_type *type,
  * @i: u64 used as loop variable
  * @p_start: ptr to phys_addr_t for start address of the range, can be %NULL
  * @p_end: ptr to phys_addr_t for end address of the range, can be %NULL
+ *
+ * for_each_mem_range - 遍历内存区域.
+ * @i: 循环变量,类型为u64
+ * @p_start: 指向物理起始地址(phys_addr_t类型)的指针,可以为%NULL
+ * @p_end: 指向物理结束地址(phys_addr_t类型)的指针,可以为%NULL
  */
 #define for_each_mem_range(i, p_start, p_end) \
 	__for_each_mem_range(i, &memblock.memory, NULL, NUMA_NO_NODE,	\

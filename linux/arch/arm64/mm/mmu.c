@@ -622,7 +622,9 @@ static inline void arm64_kfence_map_pool(phys_addr_t kfence_pool, pgd_t *pgdp) {
 
 static void __init map_mem(pgd_t *pgdp)
 {
+	/* 这里是那直接映射的结束地址 */
 	static const u64 direct_map_end = _PAGE_END(VA_BITS_MIN);
+	/* 拿到内核的起始地址和结束地址 */
 	phys_addr_t kernel_start = __pa_symbol(_stext);
 	phys_addr_t kernel_end = __pa_symbol(__init_begin);
 	phys_addr_t start, end;
@@ -639,12 +641,22 @@ static void __init map_mem(pgd_t *pgdp)
 	 * (Unless we are running with support for LPA2, in which case the
 	 * entire reduced VA space is covered by a single pgd_t which will have
 	 * been populated without the PXNTable attribute by the time we get here.)
+	 *
+	 * 只有在保证线性区域和vmalloc区域之间不会共享任何级别的表项时,才能在覆盖线性区域的表项上设置层次化的PXNTable属性.
+	 * 检查这是否适用于PGD(页全局目录)级别,如果是,那么也可以保证所有其他级别也适用.
+	 *
+	 * (除非我们正在使用支持 LPA2(第二级页表地址扩展)的系统,
+	 * 在这种情况下,整个缩减的虚拟地址空间由一个单独的pgd_t覆盖,而在我们到达这一步之前,该 pgd_t 已被填充且不包含PXNTable 属性.）
 	 */
 	BUILD_BUG_ON(pgd_index(direct_map_end - 1) == pgd_index(direct_map_end) &&
 		     pgd_index(_PAGE_OFFSET(VA_BITS_MIN)) != PTRS_PER_PGD - 1);
 
 	early_kfence_pool = arm64_kfence_alloc_pool();
 
+	/*
+	 * 如果can_set_direct_map()返回true,说明希望系统线性映射以页面为单位
+	 * 所以这里flags就要把快映射和连续映射给拔掉
+	 */
 	if (can_set_direct_map())
 		flags |= NO_BLOCK_MAPPINGS | NO_CONT_MAPPINGS;
 
@@ -653,10 +665,14 @@ static void __init map_mem(pgd_t *pgdp)
 	 * read-only text and rodata sections of the kernel image.
 	 * So temporarily mark them as NOMAP to skip mappings in
 	 * the following for-loop
+	 *
+	 * 注意不要为内核映像的只读文本和只读数据段创建可写别名.
+	 * 因此,暂时将它们标记为NOMAP,以跳过在后续for循环中的映射.
 	 */
 	memblock_mark_nomap(kernel_start, kernel_end - kernel_start);
 
 	/* map all the memory banks */
+	/* 这个for循坏会跳过部分内存块,譬如上面的no-map的就会跳过 */
 	for_each_mem_range(i, &start, &end) {
 		if (start >= end)
 			break;
@@ -664,6 +680,9 @@ static void __init map_mem(pgd_t *pgdp)
 		 * The linear map must allow allocation tags reading/writing
 		 * if MTE is present. Otherwise, it has the same attributes as
 		 * PAGE_KERNEL.
+		 *
+		 * 如果存在内存标记扩展(MTE),线性映射必须允许读取/写入分配标签.
+		 * 否则,它具有与PAGE_KERNEL相同的属性.
 		 */
 		__map_memblock(pgdp, start, end, pgprot_tagged(PAGE_KERNEL),
 			       flags);
@@ -678,6 +697,11 @@ static void __init map_mem(pgd_t *pgdp)
 	 * but protects it from inadvertent modification or execution.
 	 * Note that contiguous mappings cannot be remapped in this way,
 	 * so we should avoid them here.
+	 *
+	 * 将[_stext, __init_begin)区间的线性别名现在映射为非可执行,
+	 * 并在下面的mark_linear_text_alias_ro()函数中移除写权限(该函数将在替代补丁完成后被调用).
+	 * 这使得该区域的内容对休眠等子系统可访问,但防止其被意外修改或执行.
+	 * 请注意,连续映射不能通过这种方式重新映射,因此我们应该在这里避免使用它们.
 	 */
 	__map_memblock(pgdp, kernel_start, kernel_end,
 		       PAGE_KERNEL, NO_CONT_MAPPINGS);

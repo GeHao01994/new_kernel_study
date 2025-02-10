@@ -22,6 +22,7 @@ struct page_change_data {
 
 bool rodata_full __ro_after_init = IS_ENABLED(CONFIG_RODATA_FULL_DEFAULT_ENABLED);
 
+/* 这个函数的意思是希望线性映射都以页面为粒度吧 */
 bool can_set_direct_map(void)
 {
 	/*
@@ -32,6 +33,13 @@ bool can_set_direct_map(void)
 	 * KFENCE pool requires page-granular mapping if initialized late.
 	 *
 	 * Realms need to make pages shared/protected at page granularity.
+	 *
+	 * rodata_full、DEBUG_PAGEALLOC 和 Realm guest都需要以页面粒度映射线性映射,
+	 * 以便能够对单个页面进行保护/取消保护.
+	 *
+	 * 如果 KFENCE 内存池初始化较晚,则需要页面粒度的映射.
+	 *
+	 * Realm 系统需要以页面粒度对页面进行共享/保护设置.
 	 */
 	return rodata_full || debug_pagealloc_enabled() ||
 		arm64_kfence_can_set_direct_map() || is_realm_world();

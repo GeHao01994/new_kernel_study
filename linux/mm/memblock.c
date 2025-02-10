@@ -1321,28 +1321,56 @@ static bool should_skip_region(struct memblock_type *type,
 {
 	int m_nid = memblock_get_region_node(m);
 
-	/* we never skip regions when iterating memblock.reserved or physmem */
+	/*
+	 * we never skip regions when iterating memblock.reserved or physmem
+	 * 在遍历memblock.reserved或physmem时,我们从不跳过任何区域.
+	 */
 	if (type != memblock_memory)
 		return false;
 
-	/* only memory regions are associated with nodes, check it */
+	/*
+	 * only memory regions are associated with nodes, check it
+	 *
+	 * 只有当内存区域与节点相关联时,才进行检查.
+	 */
 	if (numa_valid_node(nid) && nid != m_nid)
 		return true;
 
-	/* skip hotpluggable memory regions if needed */
+	/*
+	 * skip hotpluggable memory regions if needed
+	 *
+	 * 如果需要,则跳过可热插拔的内存区域.
+	 */
+	/* static inline bool movable_node_is_enabled(void)
+	 *{
+	 *	return movable_node_enabled;
+	 *}
+	 */
 	if (movable_node_is_enabled() && memblock_is_hotpluggable(m) &&
 	    !(flags & MEMBLOCK_HOTPLUG))
 		return true;
 
-	/* if we want mirror memory skip non-mirror memory regions */
+	/*
+	 * if we want mirror memory skip non-mirror memory regions
+	 *
+	 * 如果我们想要镜像内存,则跳过非镜像内存区域.
+	 */
 	if ((flags & MEMBLOCK_MIRROR) && !memblock_is_mirror(m))
 		return true;
 
-	/* skip nomap memory unless we were asked for it explicitly */
+	/*
+	 * skip nomap memory unless we were asked for it explicitly
+	 *
+	 * 除非明确请求,否则跳过nomap内存区域.
+	 */
 	if (!(flags & MEMBLOCK_NOMAP) && memblock_is_nomap(m))
 		return true;
 
-	/* skip driver-managed memory unless we were asked for it explicitly */
+	/*
+	 * skip driver-managed memory unless we were asked for it explicitly
+	 *
+	 * 除非明确请求,否则跳过由驱动程序管理的内存区域.
+	 */
 	if (!(flags & MEMBLOCK_DRIVER_MANAGED) && memblock_is_driver_managed(m))
 		return true;
 
@@ -1374,25 +1402,54 @@ static bool should_skip_region(struct memblock_type *type,
  *
  * As both region arrays are sorted, the function advances the two indices
  * in lockstep and returns each intersection.
+ *
+ * __next_mem_range - 用于for_each_free_mem_range()等函数的下一个遍历函数.
+ * @idx: 指向u64类型循环变量的指针
+ * @nid: 节点选择器,对于所有节点使用%NUMA_NO_NODE
+ * @flags: 根据内存属性从区块中选择
+ * @type_a: 从中选取范围的memblock类型的指针
+ * @type_b: 指向memblock_type的指针,表示排除(不被占用)的内存块类型
+ * @out_start: 指向物理起始地址(phys_addr_t类型)的指针,可以为%NULL
+ * @out_end: 指向物理结束地址(phys_addr_t类型)的指针,可以为%NULL
+ * @out_nid: 指向范围节点ID(int类型)的指针,可以为%NULL
+ *
+ * 从*@idx指向的位置开始,找到第一个匹配@nid的区域,填充输出参数,并更新*@idx以便下次迭代.
+ * *@idx的低32位包含type_a中的索引,而高32位则索引type_b中每个区域之前的区域.
+ *
+ * 例如,如果type_b的区域如下所示:
+ *
+ * 	0:[0-16), 1:[32-48), 2:[128-130)
+ *
+ * 高32位索引以下的区域:
+ *
+ *	0:[0-0), 1:[16-32), 2:[48-128), 3:[130-MAX)
+ *
+ * 由于两个区域数组都是排序的,该函数会同步推进这两个索引,并返回每个交集.
  */
 void __next_mem_range(u64 *idx, int nid, enum memblock_flags flags,
 		      struct memblock_type *type_a,
 		      struct memblock_type *type_b, phys_addr_t *out_start,
 		      phys_addr_t *out_end, int *out_nid)
 {
+	/* 拿到idx的低32位 */
 	int idx_a = *idx & 0xffffffff;
+	/* 拿到idx的高32位 */
 	int idx_b = *idx >> 32;
 
+	/* 从idx_a到cnt的循环 */
 	for (; idx_a < type_a->cnt; idx_a++) {
+		/* 拿到对应的memblock_region */
 		struct memblock_region *m = &type_a->regions[idx_a];
 
 		phys_addr_t m_start = m->base;
 		phys_addr_t m_end = m->base + m->size;
 		int	    m_nid = memblock_get_region_node(m);
 
+		/* 这里需要跳过某些区域 */
 		if (should_skip_region(type_a, m, nid, flags))
 			continue;
 
+		/* 如果type_b为NULL,那么返回相应的输出参数 */
 		if (!type_b) {
 			if (out_start)
 				*out_start = m_start;
@@ -1400,33 +1457,78 @@ void __next_mem_range(u64 *idx, int nid, enum memblock_flags flags,
 				*out_end = m_end;
 			if (out_nid)
 				*out_nid = m_nid;
+			/*
+			 * idx_a计数 + 1
+			 * 并且加上高32位(idx_b << 32)
+			 */
 			idx_a++;
 			*idx = (u32)idx_a | (u64)idx_b << 32;
 			return;
 		}
 
-		/* scan areas before each reservation */
+		/*
+		 * scan areas before each reservation
+		 *
+		 * 在每次预留之前扫描区域
+		 */
 		for (; idx_b < type_b->cnt + 1; idx_b++) {
 			struct memblock_region *r;
 			phys_addr_t r_start;
 			phys_addr_t r_end;
 
+			/*
+			 * 经典之处在于这里
+			 * 我们假设idx = 0;
+			 *
+			 * mstart                                   mend
+			 * ↓                                         ↓
+			 *   ________________________________________
+			 *  |________________________________________|
+			 *
+			 *        _____________________________
+			 *       |_____________________________|
+			 *      ↑			       ↑
+			 *     r->base                       r->end
+			 *
+			 * 那么r_start会在下面的赋值中转换成0, r_end会在下面的赋值中转换成r->base
+			 * 所以拿到的还是不相交的部分
+			 */
+			/* 拿到相应的memblock_region */
 			r = &type_b->regions[idx_b];
+			/*
+			 * 如果idx_b为NULL,那么设置为0
+			 * 否则,拿到前一个的base
+			 */
 			r_start = idx_b ? r[-1].base + r[-1].size : 0;
+			/*
+			 * 如果idx_b < type_b->cnt,那么就是r->base
+			 * 否则为PHYS_ADDR_MAX
+			 */
 			r_end = idx_b < type_b->cnt ?
 				r->base : PHYS_ADDR_MAX;
 
 			/*
 			 * if idx_b advanced past idx_a,
 			 * break out to advance idx_a
+			 *
+			 * 如果idx_b超过了idx_a,则跳出循环以推进idx_a
 			 */
+			/* 也就是说m_end比r_start要小,那肯定不会有重叠的了 */
 			if (r_start >= m_end)
 				break;
-			/* if the two regions intersect, we're done */
+			/*
+			 * if the two regions intersect, we're done
+			 *
+			 * 如果两个区域相交,那么我们就完成了
+			 */
+
+			/* 如果m_start < r_end */
 			if (m_start < r_end) {
+				/* 拿到m_start和r_start的最大值 */
 				if (out_start)
 					*out_start =
 						max(m_start, r_start);
+				/* 拿到m_end和r_end的最小值 */
 				if (out_end)
 					*out_end = min(m_end, r_end);
 				if (out_nid)
@@ -1434,11 +1536,16 @@ void __next_mem_range(u64 *idx, int nid, enum memblock_flags flags,
 				/*
 				 * The region which ends first is
 				 * advanced for the next iteration.
+				 *
+				 * 先结束的那个区域将在下一次迭代中向前推进.
+				 * 这里的意思应该是说他们有重叠部分吧
+				 *
 				 */
 				if (m_end <= r_end)
 					idx_a++;
 				else
 					idx_b++;
+				/* 并上idx */
 				*idx = (u32)idx_a | (u64)idx_b << 32;
 				return;
 			}
