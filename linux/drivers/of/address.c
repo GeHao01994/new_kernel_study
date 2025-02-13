@@ -961,6 +961,12 @@ int of_dma_get_range(struct device_node *np, const struct bus_dma_region **map)
  * Gets the highest CPU physical address that is addressable by all DMA masters
  * in the sub-tree pointed by np, or the whole tree if NULL is passed. If no
  * DMA constrained device is found, it returns PHYS_ADDR_MAX.
+ *
+ * of_dma_get_max_cpu_address - 获取适合DMA的最高CPU地址
+ * @np: 从该节点开始搜索,或者如果为NULL则从根节点开始
+ *
+ * 获取由np指向的子树(如果np为NULL，则为整个树)中所有DMA主设备可寻址的最高CPU物理地址.
+ * 如果没有找到受DMA约束的设备,则返回PHYS_ADDR_MAX.
  */
 phys_addr_t __init of_dma_get_max_cpu_address(struct device_node *np)
 {
@@ -973,9 +979,11 @@ phys_addr_t __init of_dma_get_max_cpu_address(struct device_node *np)
 	u64 cpu_end = 0;
 	int len;
 
+	/* 如果np为空,则从根节点开始 */
 	if (!np)
 		np = of_root;
 
+	/* 如果根节点中设置了dma-ranges */
 	ranges = of_get_property(np, "dma-ranges", &len);
 	if (ranges && len) {
 		of_dma_range_parser_init(&parser, np);

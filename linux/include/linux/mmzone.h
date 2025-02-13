@@ -744,6 +744,35 @@ struct per_cpu_nodestat {
 
 #endif /* !__GENERATING_BOUNDS.H */
 
+/*
+ * ``ZONE_DMA`` 和 ``ZONE_DMA32`` 在历史上代表适用于DMA的内存,
+ * 这些内存由那些不能访问所有可寻址内存的外设访问.
+ * 多年来,已经有了更好、更稳固的接口来获取满足特定DMA需求的内存
+ * (这些接口由Documentation/core-api/dma-api.rst 文档描述),
+ * 但是 ``ZONE_DMA`` 和 ``ZONE_DMA32`` 仍然表示访问受限的内存范围.
+ *
+ * 取决于架构的不同,这两种区域可以在构建时通过关闭 ``CONFIG_ZONE_DMA`` 和
+ * ``CONFIG_ZONE_DMA32`` 配置选项来禁用.
+ * 一些64位的平台可能需要这两种区域,因为他们支持具有不同DMA寻址限制的外设.
+ *
+ *
+ * ``ZONE_NORMAL`` 是普通内存的区域,这种内存可以被内核随时访问.如果DMA
+ * 设备支持将数据传输到所有可寻址的内存区域,那么可在该区域的页面上执行DMA
+ * 操作. ``ZONE_NORMAL`` 总是开启的.
+ *
+ * ``ZONE_HIGHMEM``是指那些没有在内核页表中永久映射的物理内存部分.该区
+ * 域的内存只能通过临时映射被内核访问.该区域只在某些32位架构上可用,并且是
+ * 通过 ``CONFIG_HIGHMEM`` 选项开启.
+ *
+ * ``ZONE_MOVABLE``是指可访问的普通内存区域,就像``ZONE_NORMAL``一样.
+ * 不同之处在于 ``ZONE_MOVABLE`` 中的大多数页面内容是可移动的.
+ * 这意味着这些页面的虚拟地址不会改变,但它们的内容可能会在不同的物理页面
+ * 之间移动.通常,在内存热插拔期间填充 ``ZONE_MOVABLE``,在启动时也可以使用
+ * ``kernelcore``、``movablecore`` 和 ``movable_node``
+ * 这些内核命令行参数来填充.
+ * 更多详细信息,请参阅内核文档Documentation/mm/page_migration.rst 和
+ * Documentation/admin-guide/mm/memory-hotplug.rst.
+ */
 enum zone_type {
 	/*
 	 * ZONE_DMA and ZONE_DMA32 are used when there are peripherals not able

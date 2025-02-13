@@ -125,10 +125,22 @@ static void __init zone_sizes_init(void)
 	unsigned long max_zone_pfns[MAX_NR_ZONES]  = {0};
 	phys_addr_t __maybe_unused acpi_zone_dma_limit;
 	phys_addr_t __maybe_unused dt_zone_dma_limit;
+	/*
+	 * #define DMA_BIT_MASK(n)	(((n) == 64) ? ~0ULL : ((1ULL<<(n))-1))
+	 *
+	 * 这里是这是32位
+	 * 所以DMA_BIT_MASK = 0xffffffff
+	 *
+	 * static phys_addr_t __init max_zone_phys(phys_addr_t zone_limit)
+	 *{
+	 *	return min(zone_limit, memblock_end_of_DRAM() - 1) + 1;
+	 *}
+	 */
 	phys_addr_t __maybe_unused dma32_phys_limit =
 		max_zone_phys(DMA_BIT_MASK(32));
 
 #ifdef CONFIG_ZONE_DMA
+	/* 拿到dma_zone的limit */
 	acpi_zone_dma_limit = acpi_iort_dma_get_max_cpu_address();
 	dt_zone_dma_limit = of_dma_get_max_cpu_address(NULL);
 	zone_dma_limit = min(dt_zone_dma_limit, acpi_zone_dma_limit);
@@ -137,21 +149,34 @@ static void __init zone_sizes_init(void)
 	 * bus constraints. Devices using DMA might have their own limitations.
 	 * Some of them rely on DMA zone in low 32-bit memory. Keep low RAM
 	 * DMA zone on platforms that have RAM there.
+	 *
+	 * 我们从固件(例如设备树中的dma-ranges属性)中获取的信息描述了DMA总线的约束条件.
+	 * 使用DMA的设备可能有自己的限制.
+	 * 其中一些设备依赖于低32位内存中的DMA区域.
+	 * 在那些有低内存RAM的平台上,保留低RAM DMA区域.
 	 */
+
+	/* 低内存的平台,保留zone_dma_limit的区域 */
 	if (memblock_start_of_DRAM() < U32_MAX)
 		zone_dma_limit = min(zone_dma_limit, U32_MAX);
+
+	/* 设置ZONE_DMA最大的PFN */
 	arm64_dma_phys_limit = max_zone_phys(zone_dma_limit);
 	max_zone_pfns[ZONE_DMA] = PFN_DOWN(arm64_dma_phys_limit);
 #endif
 #ifdef CONFIG_ZONE_DMA32
+	/* 设置DMA32的最大PFN */
 	max_zone_pfns[ZONE_DMA32] = PFN_DOWN(dma32_phys_limit);
 	if (!arm64_dma_phys_limit)
 		arm64_dma_phys_limit = dma32_phys_limit;
 #endif
 	if (!arm64_dma_phys_limit)
 		arm64_dma_phys_limit = PHYS_MASK + 1;
+
+	/* 设置ZONE_NORMAL的最大pfn */
 	max_zone_pfns[ZONE_NORMAL] = max_pfn;
 
+	/* Initialise all pg_data_t and zone data */
 	free_area_init(max_zone_pfns);
 }
 
@@ -497,11 +522,15 @@ void __init bootmem_init(void)
 {
 	unsigned long min, max;
 
+	/* 拿到最小的PFN */
 	min = PFN_UP(memblock_start_of_DRAM());
+	/* 拿到最大的PFN */
 	max = PFN_DOWN(memblock_end_of_DRAM());
 
+	/* 做内存测试,看有没有坏块 */
 	early_memtest(min << PAGE_SHIFT, max << PAGE_SHIFT);
 
+	/* 把max_pfn和max_low_pfn都设置为max */
 	max_pfn = max_low_pfn = max;
 	min_low_pfn = min;
 
@@ -511,6 +540,9 @@ void __init bootmem_init(void)
 	 * must be done after arch_numa_init() which calls numa_init() to
 	 * initialize node_online_map that gets used in hugetlb_cma_reserve()
 	 * while allocating required CMA size across online nodes.
+	 *
+	 * 必须在调用numa_init()以初始化node_online_map的arch_numa_init()之后完成,
+	 * node_online_map在跨在线节点分配所需的CMA(连续内存分配器)大小时,会被hugetlb_cma_reserve()使用
 	 */
 #if defined(CONFIG_HUGETLB_PAGE) && defined(CONFIG_CMA)
 	arm64_hugetlb_cma_reserve();
@@ -521,6 +553,8 @@ void __init bootmem_init(void)
 	/*
 	 * sparse_init() tries to allocate memory from memblock, so must be
 	 * done after the fixed reservations
+	 *
+	 * sparse_init()尝试从内存块(memblock)中分配内存,因此必须在固定预留之后进行.
 	 */
 	sparse_init();
 	zone_sizes_init();

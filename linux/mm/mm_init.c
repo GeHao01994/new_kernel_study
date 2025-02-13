@@ -314,6 +314,9 @@ static unsigned long __init early_calculate_totalpages(void)
  * This finds a zone that can be used for ZONE_MOVABLE pages. The
  * assumption is made that zones within a node are ordered in monotonic
  * increasing memory addresses so that the "highest" populated zone is used
+ *
+ * 这用于找到一个可用于ZONE_MOVABLE页面的区域.
+ * 这里假设一个节点内的区域是按照内存地址单调递增的顺序排列的,因此会使用“最高”的被填充区域。
  */
 static void __init find_usable_zone_for_movable(void)
 {
@@ -336,33 +339,66 @@ static void __init find_usable_zone_for_movable(void)
  * is spread evenly between nodes as long as the nodes have enough
  * memory. When they don't, some nodes will have more kernelcore than
  * others
+ *
+ * 查找每个节点中可移动区域(Movable zone)开始的页帧号(PFN).
+ * 只要节点有足够的内存,内核内存就会均匀地分布在各个节点之间.
+ * 当节点内存不足时,某些节点将拥有比其他节点更多的内核核心内存(kernelcore).
  */
 static void __init find_zone_movable_pfns_for_nodes(void)
 {
 	int i, nid;
 	unsigned long usable_startpfn;
 	unsigned long kernelcore_node, kernelcore_remaining;
-	/* save the state before borrow the nodemask */
+	/*
+	 * save the state before borrow the nodemask
+	 *
+	 * 在借用nodemask之前保存状态
+	 */
 	nodemask_t saved_node_state = node_states[N_MEMORY];
+	/* 早起计算所有页面的函数,就是把每个内存的都加起来 */
 	unsigned long totalpages = early_calculate_totalpages();
+	/* usable: 表示可用的节点数量 */
 	int usable_nodes = nodes_weight(node_states[N_MEMORY]);
 	struct memblock_region *r;
 
-	/* Need to find movable_zone earlier when movable_node is specified. */
+	/*
+	 * Need to find movable_zone earlier when movable_node is specified.
+	 *
+	 * 当指定可移动节点时,需要提前找到movable_zone.
+	 */
+
+	/*
+	 * 这用于找到一个可用于ZONE_MOVABLE页面的区域.
+	 * 这里假设一个节点内的区域是按照内存地址单调递增的顺序排列的,
+	 * 因此会使用“最高”的被填充区域.
+	 */
+
 	find_usable_zone_for_movable();
 
 	/*
 	 * If movable_node is specified, ignore kernelcore and movablecore
 	 * options.
 	 */
+
+	/*
+	 * 这里是说如果启动参数中带了movable_node
+	 * 也就是movable_node_enabled被设置为了true
+	 *
+	 * 也就是想用热插拔来作为该zone
+	 */
 	if (movable_node_is_enabled()) {
+		/* 这里是轮询所有的mem_region */
 		for_each_mem_region(r) {
+			/* 如果这块memblock不是hotplug的,那么continue */
 			if (!memblock_is_hotpluggable(r))
 				continue;
 
+			/* 如果这块memblock是hotplug的,那么拿到它的node id */
 			nid = memblock_get_region_node(r);
 
+			/* 设置usable_startpfn为这块memblock的起始pfn */
 			usable_startpfn = memblock_region_memory_base_pfn(r);
+			/* 设置该节点的zone_movanle_pfn为最小的那块 */
 			zone_movable_pfn[nid] = zone_movable_pfn[nid] ?
 				min(usable_startpfn, zone_movable_pfn[nid]) :
 				usable_startpfn;
@@ -373,33 +409,49 @@ static void __init find_zone_movable_pfns_for_nodes(void)
 
 	/*
 	 * If kernelcore=mirror is specified, ignore movablecore option
+	 *
+	 * 如果指定了kernelcore=mirror,则忽略movablecore选项
+	 * 这里是说kernelcore想用镜像内存
+	 *
+	 * 内核参数kernelcore也可用于指定非可移动内存的大小,剩余的内存都是可移动内存
 	 */
 	if (mirrored_kernelcore) {
+		/* mem_below_4gb_not_mirrored 是指系统内存中低于4GB的部分没有被镜像到备用内存 */
 		bool mem_below_4gb_not_mirrored = false;
 
+		/* 如果系统中没有镜像,那么报个警告之后goto out */
 		if (!memblock_has_mirror()) {
 			pr_warn("The system has no mirror memory, ignore kernelcore=mirror.\n");
 			goto out;
 		}
 
+		/* 如果有kdump,那么也忽略这个参数 */
 		if (is_kdump_kernel()) {
 			pr_warn("The system is under kdump, ignore kernelcore=mirror.\n");
 			goto out;
 		}
 
+		/* 对每个memory region */
 		for_each_mem_region(r) {
+			/* 如果memblock是mirror的 */
 			if (memblock_is_mirror(r))
 				continue;
 
+			/* 拿到这块memblock region的node id */
 			nid = memblock_get_region_node(r);
 
+			/* 拿到这块起始pfn */
 			usable_startpfn = memblock_region_memory_base_pfn(r);
 
+			/*
+			 * 如果这块起始pfn低于4G,那么设置mem_below_4gb_not_mirrored为true之后continue
+			 */
 			if (usable_startpfn < PHYS_PFN(SZ_4G)) {
 				mem_below_4gb_not_mirrored = true;
 				continue;
 			}
 
+			/* 设置改节点的zone_movable_pfn */
 			zone_movable_pfn[nid] = zone_movable_pfn[nid] ?
 				min(usable_startpfn, zone_movable_pfn[nid]) :
 				usable_startpfn;
@@ -414,6 +466,8 @@ static void __init find_zone_movable_pfns_for_nodes(void)
 	/*
 	 * If kernelcore=nn% or movablecore=nn% was specified, calculate the
 	 * amount of necessary memory.
+	 *
+	 * 如果指定了kernelcore=nn%或movablecore=nn%,则计算所需内存的量.
 	 */
 	if (required_kernelcore_percent)
 		required_kernelcore = (totalpages * 100 * required_kernelcore_percent) /
@@ -429,34 +483,63 @@ static void __init find_zone_movable_pfns_for_nodes(void)
 	 * and movablecore are specified, then the value of kernelcore
 	 * will be used for required_kernelcore if it's greater than
 	 * what movablecore would have allowed.
+	 *
+	 * 如果指定了movablecore=(后面通常会跟一个数值或百分比),则需要计算出与之对应的kernelcore的大小,
+	 * 以确保可用于任何类型分配的内存能够均匀分布.
+	 * 如果同时指定了kernelcore和movablecore,
+	 * 那么在kernelcore的值大于movablecore所允许的值时,将使用kernelcore的值作为required_kernelcore.
 	 */
+
+	/* 如果设置了movablecore */
 	if (required_movablecore) {
 		unsigned long corepages;
 
 		/*
 		 * Round-up so that ZONE_MOVABLE is at least as large as what
 		 * was requested by the user
+		 *
+		 * 向上取整,以确保ZONE_MOVABLE区域的大小至少与用户请求的大小一致.
+		 */
+
+		/*
+		 * ORDER对齐
 		 */
 		required_movablecore =
 			roundup(required_movablecore, MAX_ORDER_NR_PAGES);
+
+		/* 取它和totalpages的最小值 */
 		required_movablecore = min(totalpages, required_movablecore);
+		/* 然后取corepages */
 		corepages = totalpages - required_movablecore;
 
+		/* 取required_kernelcore和corepage的最大值 */
 		required_kernelcore = max(required_kernelcore, corepages);
 	}
 
 	/*
 	 * If kernelcore was not specified or kernelcore size is larger
 	 * than totalpages, there is no ZONE_MOVABLE.
+	 *
+	 * 如果未指定kernelcore或者kernelcore的大小大于总页数(totalpages),则不会存在ZONE_MOVABLE区域.
 	 */
 	if (!required_kernelcore || required_kernelcore >= totalpages)
 		goto out;
 
 	/* usable_startpfn is the lowest possible pfn ZONE_MOVABLE can be at */
+	/*
+	 * 拿到ZONE_MOVABLE的startpfn
+	 * 在find_usable_zone_for_movable里面找到的
+	 */
 	usable_startpfn = arch_zone_lowest_possible_pfn[movable_zone];
 
 restart:
-	/* Spread kernelcore memory as evenly as possible throughout nodes */
+	/*
+	 * Spread kernelcore memory as evenly as possible throughout nodes
+	 *
+	 * 尽可能均匀地在各个节点上分配内核核心内存(kernelcore memory)
+	 */
+
+	/* 这里就是看看每个node要分required_kernelcore */
 	kernelcore_node = required_kernelcore / usable_nodes;
 	for_each_node_state(nid, N_MEMORY) {
 		unsigned long start_pfn, end_pfn;
@@ -465,6 +548,8 @@ restart:
 		 * Recalculate kernelcore_node if the division per node
 		 * now exceeds what is necessary to satisfy the requested
 		 * amount of memory for the kernel
+		 *
+		 * 如果每个节点的划分现在超出了满足内核所需内存量所必需的范围,则重新计算kernelcore_node
 		 */
 		if (required_kernelcore < kernelcore_node)
 			kernelcore_node = required_kernelcore / usable_nodes;
@@ -473,29 +558,46 @@ restart:
 		 * As the map is walked, we track how much memory is usable
 		 * by the kernel using kernelcore_remaining. When it is
 		 * 0, the rest of the node is usable by ZONE_MOVABLE
+		 *
+		 * 当遍历内存映射时,我们使用kernelcore_remaining来跟踪内核在该过程中还可以使用多少内存.
+		 * 当kernelcore_remaining变为0时,表示该节点的剩余内存部分可由ZONE_MOVABLE区域使用.
 		 */
 		kernelcore_remaining = kernelcore_node;
 
-		/* Go through each range of PFNs within this node */
+		/*
+		 * Go through each range of PFNs within this node
+		 * 遍历此节点内的每个PFN范围
+		 */
 		for_each_mem_pfn_range(i, nid, &start_pfn, &end_pfn, NULL) {
 			unsigned long size_pages;
 
+			/* 取start_pfn和zone_movable_pfn的最大值 */
 			start_pfn = max(start_pfn, zone_movable_pfn[nid]);
+			/* 如果start_pfn >= end_pfn说明没有重叠部分,那就开始下一个region */
 			if (start_pfn >= end_pfn)
 				continue;
 
-			/* Account for what is only usable for kernelcore */
+			/*
+			 * Account for what is only usable for kernelcore
+			 * 考虑仅可用于kernelcore的部分
+			 */
 			if (start_pfn < usable_startpfn) {
 				unsigned long kernel_pages;
+				/* 算出能用做kernel_pages的部分 */
 				kernel_pages = min(end_pfn, usable_startpfn)
 								- start_pfn;
 
+				/* 然后kernelcore_remaining减去这个计数 */
 				kernelcore_remaining -= min(kernel_pages,
 							kernelcore_remaining);
+				/* 同理 */
 				required_kernelcore -= min(kernel_pages,
 							required_kernelcore);
-
-				/* Continue if range is now fully accounted */
+				/*
+				 * Continue if range is now fully accounted
+				 * 如果范围现在已经完全被考虑在内
+				 */
+				/* 这里说的是如果 这块范围完全考虑在内,也就是说都在kernelcore里面 */
 				if (end_pfn <= usable_startpfn) {
 
 					/*
@@ -503,6 +605,10 @@ restart:
 					 * that if we have to rebalance
 					 * kernelcore across nodes, we will
 					 * not double account here
+					 *
+					 * 将zone_movable_pfn推到末尾,这样
+					 * 如果我们需要在节点间重新平衡内核核心(kernelcore),
+					 * 我们在这里就不会重复计算。
 					 */
 					zone_movable_pfn[nid] = end_pfn;
 					continue;
@@ -514,6 +620,9 @@ restart:
 			 * The usable PFN range for ZONE_MOVABLE is from
 			 * start_pfn->end_pfn. Calculate size_pages as the
 			 * number of pages used as kernelcore
+			 *
+			 * ZONE_MOVABLE的可用PFN(页面帧号)范围是从start_pfn到end_pfn
+			 * 计算size_pages作为用作内核核心(kernelcore)的页面数量
 			 */
 			size_pages = end_pfn - start_pfn;
 			if (size_pages > kernelcore_remaining)
@@ -524,6 +633,9 @@ restart:
 			 * Some kernelcore has been met, update counts and
 			 * break if the kernelcore for this node has been
 			 * satisfied
+			 *
+			 * 已经满足了一部分内核核心(kernelcore)的需求,更新相关计数,
+			 * 如果当前节点的内核核心需求已经完全满足,则中断(或跳出)当前循环或流程
 			 */
 			required_kernelcore -= min(required_kernelcore,
 								size_pages);
@@ -538,19 +650,27 @@ restart:
 	 * less node in the count. This will push zone_movable_pfn[nid] further
 	 * along on the nodes that still have memory until kernelcore is
 	 * satisfied
+	 *
+	 * 如果仍然有所需的required_kernelcore,我们将在计数中减去一个节点,并再次进行遍历.
+	 * 这将使得在那些仍有内存的节点上,zone_movable_pfn[nid](即可移动区域的页面帧号)进一步向后推移,
+	 * 直到内核核心的需求得到满足.
 	 */
 	usable_nodes--;
 	if (usable_nodes && required_kernelcore > usable_nodes)
 		goto restart;
 
 out2:
-	/* Align start of ZONE_MOVABLE on all nids to MAX_ORDER_NR_PAGES */
+	/*
+	 * Align start of ZONE_MOVABLE on all nids to MAX_ORDER_NR_PAGES
+	 * 在所有节点(nids)上,将可移动区域(ZONE_MOVABLE)的起始位置对齐到MAX_ORDER_NR_PAGES的边界
+	 */
 	for (nid = 0; nid < MAX_NUMNODES; nid++) {
 		unsigned long start_pfn, end_pfn;
-
+		/* 做MAX_ORDER_NR_PAGES对齐 */
 		zone_movable_pfn[nid] =
 			roundup(zone_movable_pfn[nid], MAX_ORDER_NR_PAGES);
 
+		/* 拿到该node的边界,也就是start_pfn和end_pfn */
 		get_pfn_range_for_nid(nid, &start_pfn, &end_pfn);
 		if (zone_movable_pfn[nid] >= end_pfn)
 			zone_movable_pfn[nid] = 0;
@@ -1741,6 +1861,9 @@ void __init setup_nr_node_ids(void)
 /*
  * Some architectures, e.g. ARC may have ZONE_HIGHMEM below ZONE_NORMAL. For
  * such cases we allow max_zone_pfn sorted in the descending order
+ *
+ * 一些架构,例如ARC,可能会有ZONE_HIGHMEM位于ZONE_NORMAL之下.
+ * 对于这种情况,我们允许max_zone_pfn以降序排序
  */
 static bool arch_has_descending_max_zone_pfns(void)
 {
@@ -1759,6 +1882,17 @@ static bool arch_has_descending_max_zone_pfns(void)
  * that arch_max_dma32_pfn has no pages. It is also assumed that a zone
  * starts where the previous one ended. For example, ZONE_DMA32 starts
  * at arch_max_dma_pfn.
+ *
+ * free_area_init - 初始化所有pg_data_t和zone数据
+ * @max_zone_pfn: 每个区域的最大页帧号(PFN)数组
+ *
+ * 此函数将为系统中的每个活动node调用free_area_init_node().
+ *
+ * 使用memblock_set_node()提供的页面范围,计算每个节点中每个区域的大小及其空洞.
+ * 如果两个相邻zones的最大页帧号相匹配,则假定该区域为空.
+ *
+ * 例如,如果arch_max_dma_pfn == arch_max_dma32_pfn,则假定arch_max_dma32_pfn没有页面.
+ * 同时,也假定一个区域从前一个区域结束的地方开始.例如,ZONE_DMA32从arch_max_dma_pfn开始.
  */
 void __init free_area_init(unsigned long *max_zone_pfn)
 {
@@ -1766,32 +1900,46 @@ void __init free_area_init(unsigned long *max_zone_pfn)
 	int i, nid, zone;
 	bool descending;
 
-	/* Record where the zone boundaries are */
+	/*
+	 * Record where the zone boundaries are
+	 *
+	 * 记录区域边界的位置
+	 */
 	memset(arch_zone_lowest_possible_pfn, 0,
 				sizeof(arch_zone_lowest_possible_pfn));
 	memset(arch_zone_highest_possible_pfn, 0,
 				sizeof(arch_zone_highest_possible_pfn));
 
+	/* 记录起始的pfn */
 	start_pfn = PHYS_PFN(memblock_start_of_DRAM());
+	/* descending表示降序 */
 	descending = arch_has_descending_max_zone_pfns();
 
+	/* 对每个ZONE进行初始化 */
 	for (i = 0; i < MAX_NR_ZONES; i++) {
 		if (descending)
 			zone = MAX_NR_ZONES - i - 1;
 		else
 			zone = i;
 
+		/* 如果zone == ZONE_MOVEABLE,那么continue */
 		if (zone == ZONE_MOVABLE)
 			continue;
 
+		/* end_pfn = max_zone_pfn[zone]和start_pfn的最大值 */
 		end_pfn = max(max_zone_pfn[zone], start_pfn);
+		/* 记录边界 */
 		arch_zone_lowest_possible_pfn[zone] = start_pfn;
 		arch_zone_highest_possible_pfn[zone] = end_pfn;
-
+		/* start_pfn赋值为上一个的end_pfn */
 		start_pfn = end_pfn;
 	}
 
-	/* Find the PFNs that ZONE_MOVABLE begins at in each node */
+	/*
+	 * Find the PFNs that ZONE_MOVABLE begins at in each node
+	 *
+	 * 查找每个节点中ZONE_MOVABLE开始的页帧号(PFN)
+	 */
 	memset(zone_movable_pfn, 0, sizeof(zone_movable_pfn));
 	find_zone_movable_pfns_for_nodes();
 

@@ -395,6 +395,27 @@ static __always_inline void __nodes_fold(nodemask_t *dstp, const nodemask_t *ori
 /*
  * Bitmasks that are kept for all the nodes.
  */
+
+/*
+ * ``N_POSSIBLE``
+ * 节点可能在某个时刻上线.
+ *
+ * ``N_ONLINE``
+ * 节点已经上线.
+ *
+ * ``N_NORMAL_MEMORY``
+ * 节点拥有普通内存.
+ *
+ * ``N_HIGH_MEMORY``
+ * 节点拥有普通或高端内存. 当关闭 ``CONFIG_HIGHMEM`` 配置时,
+ * 也可以称为``N_NORMAL_MEMORY``.
+ *
+ * ``N_MEMORY``
+ * 节点拥有(普通、高端、可移动)内存.
+ *
+ * ``N_CPU``
+ * 节点拥有一个或多个CPU.
+ */
 enum node_states {
 	N_POSSIBLE,		/* The node could become online at some point */
 	N_ONLINE,		/* The node is online */

@@ -42,6 +42,26 @@ extern unsigned long long max_possible_pfn;
  * kernel resource tree.
  * @MEMBLOCK_RSRV_NOINIT: memory region for which struct pages are
  * not initialized (only for reserved regions).
+ *
+ * 这段代码定义了一个名为memblock_flags的枚举类型,用于描述内存区域的特性或属性.
+ * 以下是每个枚举成员的中文解释:
+ * @MEMBLOCK_NONE: 无特殊要求.这是默认状态,表明内存区域没有设置任何特殊属性.
+ * @MEMBLOCK_HOTPLUG: 表示该内存区域在系统启动初期,根据固件提供的内存映射被标记为可热插拔(即可以动态添加或移除)
+ * 		      的系统随机存取存储器(RAM).这意味着这块内存可能在后续某个时间点被热插拔移除.
+ *                    如果内核命令行上设置了“movable_node”选项,系统会尝试保持这块内存区域的可热插拔特性.
+ *                    但请注意,这个属性不适用于在系统启动初期之后通过热插拔方式添加的内存区域.
+ * @MEMBLOCK_MIRROR: 表示这是一个镜像区域. 在NUMA(非均匀内存访问)架构中,可能会使用镜像区域来确保数据的冗余和可靠性.
+ * 		     MEMBLOCK_MIRROR表示镜像的区域. 内存镜像是内存冗余技术的一种,工作原理与硬盘的热备份类似,
+ * 		     将内存数据做两个复制,分别放在主内存和镜像内存中.
+ * @MEMBLOCK_NOMAP: 表示该内存区域不应被添加到内核的直接映射中,并且在内存映射中被视为保留区域.
+ *		    这通常是为了避免内核直接访问这些内存区域,因为它们可能被用于特定的硬件功能或设备.
+ *		    请参考memblock_mark_nomap()函数的描述以获取更多详细信息.
+ * @MEMBLOCK_DRIVER_MANAGED: 表示该内存区域总是通过驱动程序检测和添加的,并且从不在固件提供的内存映射中被标记为系统RAM.
+ * 			     这对应于内核资源树中的IORESOURCE_SYSRAM_DRIVER_MANAGED. 这种内存区域通常用于特殊硬件设备的内存映射.
+ *
+ * @MEMBLOCK_RSRV_NOINIT: 表示该内存区域是保留的,并且对应的页结构(struct pages)不会被初始化.
+ * 			  这个属性仅适用于保留区域,用于指示这些内存页不需要被内核初始化.
+ * 			  这些枚举成员在Linux内核中用于管理和配置内存区域的属性.
  */
 enum memblock_flags {
 	MEMBLOCK_NONE		= 0x0,	/* No special request */
