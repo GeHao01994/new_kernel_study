@@ -1436,6 +1436,8 @@ typedef struct pglist_data {
 	/*
 	 * If memory initialisation on large machines is deferred then this
 	 * is the first PFN that needs to be initialised.
+	 *
+	 * 如果在大型机器上延迟内存初始化,那么这个(PFN,即页面帧号)是需要初始化的第一个页面帧号
 	 */
 	unsigned long first_deferred_pfn;
 #endif /* CONFIG_DEFERRED_STRUCT_PAGE_INIT */

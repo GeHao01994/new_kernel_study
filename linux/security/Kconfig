@@ -164,6 +164,22 @@ config LSM_MMAP_MIN_ADDR
 	  this low address space will need the permission specific to the
 	  systems running LSM.
 
+/*
+ *
+ * 配置 HARDENED_USERCOPY
+ * bool "强化内核与用户空间之间的内存复制"
+ *
+ * 隐含：STRICT_DEVMEM
+ *
+ * 帮助信息：
+ *
+ * 此选项通过拒绝超出指定堆对象大小的内存范围、跨越多个单独分配页面的内存范围、
+ * 不在进程栈上的内存范围,或属于内核文本的内存范围,来检查向/从内核复制内存时(通过copy_to_user()和copy_from_user()函数)
+ * 是否存在明显错误的内存区域.
+ * 这可以防止整类堆溢出攻击和类似的内核内存暴露问题.
+ */
+
+简而言之，HARDENED_USERCOPY选项通过增加对内存复制操作的检查，来强化内核的安全性，防止恶意用户利用内存复制漏洞进行攻击。
 config HARDENED_USERCOPY
 	bool "Harden memory copies between kernel and userspace"
 	imply STRICT_DEVMEM

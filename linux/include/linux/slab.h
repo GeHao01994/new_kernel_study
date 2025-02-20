@@ -68,17 +68,34 @@ enum _slab_flag_bits {
 /*
  * Flags to pass to kmem_cache_create().
  * The ones marked DEBUG need CONFIG_SLUB_DEBUG enabled, otherwise are no-op
+ *
+ * 传递给 kmem_cache_create() 的标志.
+ * 其中标记为 DEBUG 的标志需要启用 CONFIG_SLUB_DEBUG 配置,否则它们将不起作用。
  */
-/* DEBUG: Perform (expensive) checks on alloc/free */
+/*
+ * DEBUG: Perform (expensive) checks on alloc/free
+ * 调试: 在执行分配/释放时进行(耗时的)检查
+ */
 #define SLAB_CONSISTENCY_CHECKS	__SLAB_FLAG_BIT(_SLAB_CONSISTENCY_CHECKS)
-/* DEBUG: Red zone objs in a cache */
+/*
+ * DEBUG: Red zone objs in a cache
+ * 调试：在缓存中为对象设置红区
+ */
 #define SLAB_RED_ZONE		__SLAB_FLAG_BIT(_SLAB_RED_ZONE)
-/* DEBUG: Poison objects */
+/*
+ * DEBUG: Poison objects
+ */
 #define SLAB_POISON		__SLAB_FLAG_BIT(_SLAB_POISON)
-/* Indicate a kmalloc slab */
+/*
+ * Indicate a kmalloc slab
+ *
+ * 指示一个 kmalloc slab
+ */
 #define SLAB_KMALLOC		__SLAB_FLAG_BIT(_SLAB_KMALLOC)
 /**
  * define SLAB_HWCACHE_ALIGN - Align objects on cache line boundaries.
+ *
+ * 定义SLAB_HWCACHE_ALIGN - 在cache line界上对齐对象.
  *
  * Sufficiently large objects are aligned on cache line boundary. For object
  * size smaller than a half of cache line size, the alignment is on the half of
@@ -87,15 +104,27 @@ enum _slab_flag_bits {
  *
  * If explicit alignment is also requested by the respective
  * &struct kmem_cache_args field, the greater of both is alignments is applied.
+ *
+ * 对于足够大的对象,它们在缓存行边界上进行对齐.
+ * 对于小于缓存行尺寸一半的对象,对齐方式是以缓存行尺寸的一半为准.
+ * 通常,如果对象的尺寸小于缓存行尺寸的1/(2的n次方)(n为正整数),则对齐方式会相应调整为1/(2的n次方).
+ *
+ * 如果通过相应的&struct kmem_cache_args字段也请求了明确的对齐方式,则会采用这两种对齐方式中较大的那个.
  */
 #define SLAB_HWCACHE_ALIGN	__SLAB_FLAG_BIT(_SLAB_HWCACHE_ALIGN)
 /* Use GFP_DMA memory */
 #define SLAB_CACHE_DMA		__SLAB_FLAG_BIT(_SLAB_CACHE_DMA)
 /* Use GFP_DMA32 memory */
 #define SLAB_CACHE_DMA32	__SLAB_FLAG_BIT(_SLAB_CACHE_DMA32)
-/* DEBUG: Store the last owner for bug hunting */
+/*
+ * DEBUG: Store the last owner for bug hunting
+ * DEBUG: 存储最后的使用者以进行BUG追踪
+ */
 #define SLAB_STORE_USER		__SLAB_FLAG_BIT(_SLAB_STORE_USER)
-/* Panic if kmem_cache_create() fails */
+/*
+ * Panic if kmem_cache_create() fails
+ * 如果kmem_cache_create失败,则panic
+ */
 #define SLAB_PANIC		__SLAB_FLAG_BIT(_SLAB_PANIC)
 /**
  * define SLAB_TYPESAFE_BY_RCU - **WARNING** READ THIS!
@@ -108,6 +137,12 @@ enum _slab_flag_bits {
  * This feature only ensures the memory location backing the object
  * stays valid, the trick to using this is relying on an independent
  * object validation pass. Something like:
+ *
+ * 这会延迟释放SLAB页面一个宽限期,但不会延迟释放对象.
+ * 这意味着,当你调用kmem_cache_free()函数时,该内存位置可以随时被重用.
+ * 因此,在同一个 RCU(Read-Copy Update)宽限期内,你可能会在那里看到另一个对象.
+ * 这个特性仅确保对象所依赖的内存位置保持有效.要使用这个特性,关键在于依赖一个独立的对象验证过程.
+ * 这个过程可能类似于：
  *
  * ::
  *
@@ -133,8 +168,15 @@ enum _slab_flag_bits {
  * only if we can be sure that the memory has not been meanwhile reused
  * for some other kind of object (which our subsystem's lock might corrupt).
  *
+ * 如果我们需要从非正常的锁定途径(即,在没有通常锁定的情况下获得的地址)来间接访问内核结构,
+ * 这一方法将非常有用.我们只有在确保内存在此期间没有被重新用于其他类型的对象(这可能会因我们子系统的锁定而损坏)的情况下,
+ * 才能对该结构进行锁定以稳定它,并检查它是否仍然位于给定的地址.
+ *
  * rcu_read_lock before reading the address, then rcu_read_unlock after
  * taking the spinlock within the structure expected at that address.
+ *
+ * 在读取地址之前,我们需要先获取rcu_read_lock,然后在预期位于该地址的结构内部获取自旋锁之后
+ * 再释放rcu_read_unlock.
  *
  * Note that it is not possible to acquire a lock within a structure
  * allocated with SLAB_TYPESAFE_BY_RCU without first acquiring a reference
@@ -147,13 +189,26 @@ enum _slab_flag_bits {
  * to safely acquire those ctor-initialized locks under rcu_read_lock()
  * protection.
  *
+ * 需要注意的是,对于使用SLAB_TYPESAFE_BY_RCU分配的结构,我们无法在不先获取上述描述的引用的情况下获取其内部的锁.
+ * 原因是,在将 SLAB_TYPESAFE_BY_RCU 页面交给slab之前,这些页面并没有被清零,这意味着任何锁都必须在每次kmem_struct_alloc()调用之后进行初始化.
+ * 或者,我们可以让传递给 kmem_cache_create()的构造函数在页面分配时初始化锁,
+ * 就像 __i915_request_ctor()、sighand_ctor() 和 anon_vma_ctor() 中所做的那样.
+ * 这样的构造函数允许读者在rcu_read_lock()保护下安全地获取这些由构造函数初始化的锁.
+ *
  * Note that SLAB_TYPESAFE_BY_RCU was originally named SLAB_DESTROY_BY_RCU.
  */
 #define SLAB_TYPESAFE_BY_RCU	__SLAB_FLAG_BIT(_SLAB_TYPESAFE_BY_RCU)
-/* Trace allocations and frees */
+/*
+ * Trace allocations and frees
+ *
+ * Trace分配和释放
+ */
 #define SLAB_TRACE		__SLAB_FLAG_BIT(_SLAB_TRACE)
 
-/* Flag to prevent checks on free */
+/*
+ * Flag to prevent checks on free
+ * 防止释放时检查
+ */
 #ifdef CONFIG_DEBUG_OBJECTS
 # define SLAB_DEBUG_OBJECTS	__SLAB_FLAG_BIT(_SLAB_DEBUG_OBJECTS)
 #else
@@ -172,10 +227,21 @@ enum _slab_flag_bits {
  *   (subsystem-specific) debug option is enabled
  * - performance critical caches, should be very rare and consulted with slab
  *   maintainers, and not used together with CONFIG_SLUB_TINY
+ *
+ * 防止与兼容的kmem缓存合并. 此标志应谨慎使用.
+ * 有效的用例包括：
+ *
+ * 为自测(例如 kunit)创建的caches
+ * 子系统创建和使用的通用缓存,但仅当启用了(子系统特定的)调试选项时
+ *
+ * 对性能至关重要的缓存,这种情况应该非常罕见,并且需要与slab维护者协商,同时不能与CONFIG_SLUB_TINY 一起使用.
  */
 #define SLAB_NO_MERGE		__SLAB_FLAG_BIT(_SLAB_NO_MERGE)
 
-/* Fault injection mark */
+/*
+ * Fault injection mark
+ * Fault注入mask
+ */
 #ifdef CONFIG_FAILSLAB
 # define SLAB_FAILSLAB		__SLAB_FLAG_BIT(_SLAB_FAILSLAB)
 #else
@@ -186,6 +252,9 @@ enum _slab_flag_bits {
  *
  * All object allocations from this cache will be memcg accounted, regardless of
  * __GFP_ACCOUNT being or not being passed to individual allocations.
+ *
+ * 定义 SLAB_ACCOUNT - 对 memcg 进行分配计数
+ * 从此缓存进行的所有对象分配都将进行 memcg计数,无论是否向单个分配传递了__GFP_ACCOUNT标志.
  */
 #ifdef CONFIG_MEMCG
 # define SLAB_ACCOUNT		__SLAB_FLAG_BIT(_SLAB_ACCOUNT)
@@ -203,6 +272,9 @@ enum _slab_flag_bits {
  * Ignore user specified debugging flags.
  * Intended for caches created for self-tests so they have only flags
  * specified in the code and other flags are ignored.
+ *
+ * 忽略用户指定的调试标志.
+ * 旨在为自测创建的缓存,因此它们只具有代码中指定的标志,并忽略其他标志.
  */
 #define SLAB_NO_USER_FLAGS	__SLAB_FLAG_BIT(_SLAB_NO_USER_FLAGS)
 
@@ -212,13 +284,28 @@ enum _slab_flag_bits {
 #define SLAB_SKIP_KFENCE	__SLAB_FLAG_UNUSED
 #endif
 
-/* The following flags affect the page allocator grouping pages by mobility */
+/*
+ * The following flags affect the page allocator grouping pages by mobility
+ * 以下标志影响页面分配器按移动性对页面进行分组
+ */
 /**
  * define SLAB_RECLAIM_ACCOUNT - Objects are reclaimable.
+ *
+ * SLAB_RECLAIM_ACCOUNT: 对象是可回收的.
  *
  * Use this flag for caches that have an associated shrinker. As a result, slab
  * pages are allocated with __GFP_RECLAIMABLE, which affects grouping pages by
  * mobility, and are accounted in SReclaimable counter in /proc/meminfo
+ *
+ * 这个标志用于那些与shrinker（收缩器）相关联的缓存.
+ * shrinker是内核中用于在内存压力时回收内存的一种机制.
+ * 当为缓存设置了这个标志时,意味着该缓存中的对象在必要时可以被内核回收以释放内存.
+ *
+ * 此标志用于那些关联有收缩器(shrinker)的缓存.
+ *
+ * 结果,slab页面会以__GFP_RECLAIMABLE(可回收)的方式分配,这会影响页面按移动性的分组,
+ * 并且这些页面会在/proc/meminfo的SReclaimable计数器中进行统计
+ *
  */
 #ifndef CONFIG_SLUB_TINY
 #define SLAB_RECLAIM_ACCOUNT	__SLAB_FLAG_BIT(_SLAB_RECLAIM_ACCOUNT)
@@ -237,6 +324,9 @@ enum _slab_flag_bits {
 /*
  * freeptr_t represents a SLUB freelist pointer, which might be encoded
  * and not dereferenceable if CONFIG_SLAB_FREELIST_HARDENED is enabled.
+ *
+ * freeptr_t代表了一个 SLUB 自由列表(freelist)指针,当启用CONFIG_SLAB_FREELIST_HARDENED配置选项时,
+ * 这个指针可能会被编码,并且不能直接解引用.
  */
 typedef struct { unsigned long v; } freeptr_t;
 
@@ -273,24 +363,47 @@ bool slab_is_available(void);
  *
  * When %NULL args is passed to kmem_cache_create(), it is equivalent to all
  * fields unused.
+ *
+ * kmem_cache_args 结构体是用于kmem_cache_create()函数的一个参数结构体,它包含了一些不那么常用的参数.
+ *
+ * 这个结构体中的任何未初始化字段都被解释为未使用.
+ * 但是有两个例外情况需要注意：
+ * freeptr_offset字段: 当这个字段的值为%0(即0)时,它仍然可以被视为有效值,但前提是需要同时将use_freeptr_offset字段设置为%true(即true),
+ * 这样 freeptr_offset 字段才会被解释为已使用.
+ *
+ * useroffset 字段: 同样地,useroffset字段的值为%0时也是有效的,但仅当usersize字段的值非%0(即非0)时.
+ * 这意味着如果usersize为0,那么useroffset的值将被忽略,无论其是否为0.
+ *
+ * 当向kmem_cache_create(()函数传递 NULL作为args参数时,这等价于所有字段都未被使用.
  */
 struct kmem_cache_args {
 	/**
 	 * @align: The required alignment for the objects.
 	 *
 	 * %0 means no specific alignment is requested.
+	 *
+	 * @align 字段表示对象所需的对齐要求.
+	 * %0(即0)意味着没有特定的对齐要求.
 	 */
 	unsigned int align;
 	/**
 	 * @useroffset: Usercopy region offset.
 	 *
 	 * %0 is a valid offset, when @usersize is non-%0
+	 *
+	 * @useroffset 字段代表用户复制区域的偏移量.
+	 *
+	 * 当@usersize(用户区域的大小)不为0时,偏移量设置为0是有效的
 	 */
 	unsigned int useroffset;
 	/**
 	 * @usersize: Usercopy region size.
 	 *
 	 * %0 means no usercopy region is specified.
+	 *
+	 * @usersize 字段代表用户复制区域的大小.
+	 *
+	 * 当@usersize的值为0时,表示没有指定用户复制区域
 	 */
 	unsigned int usersize;
 	/**
@@ -313,6 +426,17 @@ struct kmem_cache_args {
 	 *
 	 * Note that @ctor currently isn't supported with custom free pointers
 	 * as a @ctor requires an external free pointer.
+	 *
+	 * @freeptr_offset字段用于指定在&SLAB_TYPESAFE_BY_RCU类型的缓存中,自由指针(free pointer)的自定义偏移量.
+	 *
+	 * 默认情况下,&SLAB_TYPESAFE_BY_RCU类型的缓存会将free pointer放置在对象外部. 这可能会导致对象的大小增加.
+	 * 如果缓存创建者有理由避免这种情况,他们可以在自己的结构体中指定一个自定义的自由指针偏移量,以确定自由指针的放置位置.
+	 *
+	 * 需要注意的是,将自由指针放置在对象内部要求调用者确保没有使保护对象不被重复使用的字段失效(有关详细信息,请参阅 &SLAB_TYPESAFE_BY_RCU).
+	 *
+	 * 使用%0作为@freeptr_offset的值是有效的. 如果指定了@freeptr_offset,则必须将%use_freeptr_offset设置为%true.
+	 *
+	 * 另外,请注意,当使用自定义自由指针时,目前不支持@ctor(构造函数).因为@ctor需要一个外部的自由指针.
 	 */
 	unsigned int freeptr_offset;
 	/**
@@ -329,6 +453,13 @@ struct kmem_cache_args {
 	 * object.
 	 *
 	 * %NULL means no constructor.
+	 *
+	 * @ctor 字段代表对象的构造函数.
+	 *
+	 * 构造函数会在新分配的slab页面中的每个对象上被调用.缓存的使用者有责任确保在释放对象时,对象的状态与调用构造函数后的状态相同,或者妥善处理新构造的对象和重新分配的对象之间的任何差异.
+	 *
+	 * 如果@ctor被设置为%NULL,则表示没有构造函数.这意味着在对象被分配时,不会自动调用任何初始化代码.
+	 * 缓存的使用者需要自己确保对象在使用前处于正确的状态.
 	 */
 	void (*ctor)(void *);
 };
@@ -341,6 +472,7 @@ static inline struct kmem_cache *
 __kmem_cache_create(const char *name, unsigned int size, unsigned int align,
 		    slab_flags_t flags, void (*ctor)(void *))
 {
+	/* 拿到align和构造函数 */
 	struct kmem_cache_args kmem_args = {
 		.align	= align,
 		.ctor	= ctor,
@@ -400,10 +532,18 @@ __kmem_cache_default_args(const char *name, unsigned int size,
 
 /**
  * kmem_cache_create - Create a kmem cache.
+ *
+ * kmem_cache_create 函数(或宏)用于创建一个内核内存缓存(kmem cache)
+ *
  * @__name: A string which is used in /proc/slabinfo to identify this cache.
  * @__object_size: The size of objects to be created in this cache.
  * @__args: Optional arguments, see &struct kmem_cache_args. Passing %NULL
  *	    means defaults will be used for all the arguments.
+ *
+ * @__name: 一个字符串,用于在/proc/slabinfo文件中标识这个缓存. 这个名字应该是唯一的,以便于区分不同的缓存.
+ * @__object_size: 要在这个缓存中创建的对象的大小(以字节为单位). 这是每个对象所需内存空间的大小.
+ * @__args: 可选参数,指向一个struct kmem_cache_args 结构体的指针,该结构体包含了创建缓存时可以指定的各种选项.
+ *	    如果传递NULL,则使用所有参数的默认值.这个参数允许调用者指定诸如对齐要求、构造函数、析构函数等高级选项.
  *
  * This is currently implemented as a macro using ``_Generic()`` to call
  * either the new variant of the function, or a legacy one.
@@ -422,6 +562,23 @@ __kmem_cache_default_args(const char *name, unsigned int size,
  * Context: Cannot be called within a interrupt, but can be interrupted.
  *
  * Return: a pointer to the cache on success, NULL on failure.
+ *
+ * 在新版本中,kmem_cache_create宏使用_Generic()关键字根据传递的参数类型调用不同的函数变体.
+ * 有两种变体：
+ *
+ * 新变体接受四个参数: name(缓存名称)、object_size(对象大小)、args(指向 struct kmem_cache_args 的指针,包含可选参数)和flags(标志位,用于指定缓存的行为,如是否启用 SLAB 调试等).
+ *
+ * 旧变体接受五个参数: name(缓存名称)、object_size(对象大小)、align(对齐要求)、flags(标志位)和ctor(构造函数指针,用于在对象分配时初始化对象).
+ *
+ * 在旧变体中,align和ctor参数分别对应于struct kmem_cache_args结构体中的相应字段.
+ *
+ * 调用上下文: kmem_cache_create不能在中断上下文中调用,但可以被中断.这意味着在调用此函数时,必须确保当前不在中断处理程序内部,
+ * 	       但如果在调用过程中发生中断,函数应该能够正确处理这种情况.
+ *
+ * 返回值: 如果成功,返回一个指向新创建的缓存的指针;如果失败(例如,由于内存不足),返回 NULL.
+ *
+ * 在实际使用中,开发者应该根据自己的需求选择合适的变体,并提供必要的参数来创建内存缓存.
+ * 创建成功后,可以使用返回的缓存指针来分配和释放对象.
  */
 #define kmem_cache_create(__name, __object_size, __args, ...)           \
 	_Generic((__args),                                              \

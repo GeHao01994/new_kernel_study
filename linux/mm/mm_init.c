@@ -371,6 +371,10 @@ static void __init find_zone_movable_pfns_for_nodes(void)
 	 * 这用于找到一个可用于ZONE_MOVABLE页面的区域.
 	 * 这里假设一个节点内的区域是按照内存地址单调递增的顺序排列的,
 	 * 因此会使用“最高”的被填充区域.
+	 *
+	 * 注意,这里只找到了zone,并没有填充zone_movable_pfn
+	 * 所以到后面,required_kernelcore || required_kernelcore >= totalpages判断为true的时候
+	 * zone_movable_pfn还是为0
 	 */
 
 	find_usable_zone_for_movable();
@@ -1241,6 +1245,13 @@ void __ref memmap_init_zone_device(struct zone *zone,
  * provided by the architecture for a given node by using the end of the
  * highest usable zone for ZONE_MOVABLE. This preserves the assumption that
  * zones within a node are in order of monotonic increases memory addresses
+ *
+ * 架构所提供的区域范围并不包括ZONE_MOVABLE,
+ * 因为它的大小与架构无关. 与其他区域不同，
+ * ZONE_MOVABLE的起始点不是固定的.
+ * 它可能因每个节点的大小以及内核核心(kernelcore)分布的均匀程度而在每个节点中有所不同.
+ * 这个辅助函数通过使用最高可用区域的末端来调整架构为给定节点所提供的区域范围,以便为ZONE_MOVABLE留出空间.
+ * 这保留了节点内区域按内存地址单调递增顺序排列的假设.
  */
 static void __init adjust_zone_range_for_zone_movable(int nid,
 					unsigned long zone_type,
@@ -1248,21 +1259,41 @@ static void __init adjust_zone_range_for_zone_movable(int nid,
 					unsigned long *zone_start_pfn,
 					unsigned long *zone_end_pfn)
 {
-	/* Only adjust if ZONE_MOVABLE is on this node */
+	/*
+	 * Only adjust if ZONE_MOVABLE is on this node
+	 * 只在ZONE_MOVABLE在这个节点上的时候才调整
+	 */
 	if (zone_movable_pfn[nid]) {
 		/* Size ZONE_MOVABLE */
+		/* 这里是ZONE_MOVABLE */
 		if (zone_type == ZONE_MOVABLE) {
 			*zone_start_pfn = zone_movable_pfn[nid];
 			*zone_end_pfn = min(node_end_pfn,
 				arch_zone_highest_possible_pfn[movable_zone]);
 
-		/* Adjust for ZONE_MOVABLE starting within this range */
+		/*
+		 * Adjust for ZONE_MOVABLE starting within this range
+		 * 针对在此范围内开始的ZONE_MOVABLE进行调整
+		 */
+		/*
+		 * 如果mirrored_kernelcore = false
+		 * 并且zone_start_pfn < zone_movable_pfn < zone_end_pfn
+		 * 那么设置zone_end_pfn为movable的开始
+		 */
 		} else if (!mirrored_kernelcore &&
 			*zone_start_pfn < zone_movable_pfn[nid] &&
 			*zone_end_pfn > zone_movable_pfn[nid]) {
 			*zone_end_pfn = zone_movable_pfn[nid];
 
-		/* Check if this whole range is within ZONE_MOVABLE */
+		/*
+		 * Check if this whole range is within ZONE_MOVABLE
+		 * 检查这个整个范围是否都在ZONE_MOVABLE内
+		 */
+		/*
+		 * 如果zone_movable_pfn[nid] <= zone_start_pfn
+		 * 那么设置zone_start_pfn为zone_end_pfn
+		 * 也就是说没有page了？
+		 */
 		} else if (*zone_start_pfn >= zone_movable_pfn[nid])
 			*zone_start_pfn = *zone_end_pfn;
 	}
@@ -1271,20 +1302,31 @@ static void __init adjust_zone_range_for_zone_movable(int nid,
 /*
  * Return the number of holes in a range on a node. If nid is MAX_NUMNODES,
  * then all holes in the requested range will be accounted for.
+ *
+ * 返回节点上指定范围内空洞的数量. 如果nid为MAX_NUMNODES,
+ * 则将计算请求范围内所有节点的空洞数量.
  */
 static unsigned long __init __absent_pages_in_range(int nid,
 				unsigned long range_start_pfn,
 				unsigned long range_end_pfn)
 {
+	/*
+	 * 这边就是用range_end_pfn - range_start_pfn
+	 * 现在nr_absent还是整个zone的size
+	 */
 	unsigned long nr_absent = range_end_pfn - range_start_pfn;
 	unsigned long start_pfn, end_pfn;
 	int i;
 
+	/* 然后对每个memory block range */
 	for_each_mem_pfn_range(i, nid, &start_pfn, &end_pfn, NULL) {
+		/* 计算每个mem block的大小 */
 		start_pfn = clamp(start_pfn, range_start_pfn, range_end_pfn);
 		end_pfn = clamp(end_pfn, range_start_pfn, range_end_pfn);
+		/* 减去这个大小,得到的就是空洞部分 */
 		nr_absent -= end_pfn - start_pfn;
 	}
+	/* 返回空洞部分 */
 	return nr_absent;
 }
 
@@ -1294,6 +1336,12 @@ static unsigned long __init __absent_pages_in_range(int nid,
  * @end_pfn: The end PFN to stop searching for holes
  *
  * Return: the number of pages frames in memory holes within a range.
+ *
+ * absent_pages_in_range - 返回指定范围内空洞中的页帧数
+ * @start_pfn: 开始搜索空洞的起始页帧号(Page Frame Number)
+ * @end_pfn: 停止搜索空洞的结束页帧号
+ *
+ * 返回值: 指定范围内内存空洞中的页帧数.
  */
 unsigned long __init absent_pages_in_range(unsigned long start_pfn,
 							unsigned long end_pfn)
@@ -1301,7 +1349,10 @@ unsigned long __init absent_pages_in_range(unsigned long start_pfn,
 	return __absent_pages_in_range(MAX_NUMNODES, start_pfn, end_pfn);
 }
 
-/* Return the number of page frames in holes in a zone on a node */
+/*
+ * Return the number of page frames in holes in a zone on a node
+ * 返回节点上某个区域内空洞中的页帧数
+ */
 static unsigned long __init zone_absent_pages_in_node(int nid,
 					unsigned long zone_type,
 					unsigned long zone_start_pfn,
@@ -1309,7 +1360,10 @@ static unsigned long __init zone_absent_pages_in_node(int nid,
 {
 	unsigned long nr_absent;
 
-	/* zone is empty, we don't have any absent pages */
+	/*
+	 * zone is empty, we don't have any absent pages
+	 * 如果zone是空的,我们没有任何absent的页面
+	 */
 	if (zone_start_pfn == zone_end_pfn)
 		return 0;
 
@@ -1346,6 +1400,9 @@ static unsigned long __init zone_absent_pages_in_node(int nid,
 /*
  * Return the number of pages a zone spans in a node, including holes
  * present_pages = zone_spanned_pages_in_node() - zone_absent_pages_in_node()
+ *
+ * 返回节点中一个区域所跨越的页面数量,包括其中的空洞
+ * present_pages(当前页面数)= zone_spanned_pages_in_node()(节点中区域所跨越的总页面数) - zone_absent_pages_in_node()(节点中区域缺失的页面数)
  */
 static unsigned long __init zone_spanned_pages_in_node(int nid,
 					unsigned long zone_type,
@@ -1354,24 +1411,37 @@ static unsigned long __init zone_spanned_pages_in_node(int nid,
 					unsigned long *zone_start_pfn,
 					unsigned long *zone_end_pfn)
 {
+	/* 拿到这个zone最低的pfn */
 	unsigned long zone_low = arch_zone_lowest_possible_pfn[zone_type];
+	/* 拿到这个zone最高的pfn */
 	unsigned long zone_high = arch_zone_highest_possible_pfn[zone_type];
 
 	/* Get the start and end of the zone */
+	/* 拿到该zone的起始和结束pfn */
 	*zone_start_pfn = clamp(node_start_pfn, zone_low, zone_high);
 	*zone_end_pfn = clamp(node_end_pfn, zone_low, zone_high);
+	/* 计算zone_movable的关系,这里会调整zone_start_pfn和zone_end_pfn */
 	adjust_zone_range_for_zone_movable(nid, zone_type, node_end_pfn,
 					   zone_start_pfn, zone_end_pfn);
 
-	/* Check that this node has pages within the zone's required range */
+	/*
+	 * Check that this node has pages within the zone's required range
+	 * 检查此节点是否在所需区域范围内有页面
+	 */
 	if (*zone_end_pfn < node_start_pfn || *zone_start_pfn > node_end_pfn)
 		return 0;
 
-	/* Move the zone boundaries inside the node if necessary */
+	/*
+	 * Move the zone boundaries inside the node if necessary
+	 * 如果必须的话,移动zone的边界
+	 */
 	*zone_end_pfn = min(*zone_end_pfn, node_end_pfn);
 	*zone_start_pfn = max(*zone_start_pfn, node_start_pfn);
 
-	/* Return the spanned pages */
+	/*
+	 * Return the spanned pages
+	 * 返回spanned pages
+	 */
 	return *zone_end_pfn - *zone_start_pfn;
 }
 
@@ -1424,21 +1494,25 @@ static void __init calculate_node_totalpages(struct pglist_data *pgdat,
 	unsigned long realtotalpages = 0, totalpages = 0;
 	enum zone_type i;
 
+	/* 初始化每个ZONE */
 	for (i = 0; i < MAX_NR_ZONES; i++) {
+		/* 拿到对应的zone struct */
 		struct zone *zone = pgdat->node_zones + i;
 		unsigned long zone_start_pfn, zone_end_pfn;
 		unsigned long spanned, absent;
 		unsigned long real_size;
-
+		/* 拿到spanned的页面 */
 		spanned = zone_spanned_pages_in_node(pgdat->node_id, i,
 						     node_start_pfn,
 						     node_end_pfn,
 						     &zone_start_pfn,
 						     &zone_end_pfn);
+		/* 拿到空洞部分 */
 		absent = zone_absent_pages_in_node(pgdat->node_id, i,
 						   zone_start_pfn,
 						   zone_end_pfn);
 
+		/* 真实大小就等于spanned - absent */
 		real_size = spanned - absent;
 
 		if (spanned)
@@ -1455,8 +1529,10 @@ static void __init calculate_node_totalpages(struct pglist_data *pgdat,
 		realtotalpages += real_size;
 	}
 
+	/* 设置该pgdat的node_spanned_pages和node_present_pages */
 	pgdat->node_spanned_pages = totalpages;
 	pgdat->node_present_pages = realtotalpages;
+	/* 输出一行log */
 	pr_debug("On node %d totalpages: %lu\n", pgdat->node_id, realtotalpages);
 }
 
@@ -1486,9 +1562,16 @@ static void __meminit pgdat_init_internals(struct pglist_data *pgdat)
 {
 	int i;
 
+	/*
+	 * 这里应该是重新计算大小的初始化
+	 * 如果定义了如下宏,那么就初始化pgdat->node_size_lock
+	 * #if defined(CONFIG_MEMORY_HOTPLUG) || defined(CONFIG_DEFERRED_STRUCT_PAGE_INIT)
+	 */
 	pgdat_resize_init(pgdat);
+	/* 如果定义了CONFIG_MEMORY_HOTPLUG,那么初始化pgdat->kswapd_lock */
 	pgdat_kswapd_lock_init(pgdat);
 
+	/* 这里是定义thp的分离的队列 */
 	pgdat_init_split_queue(pgdat);
 	pgdat_init_kcompactd(pgdat);
 
@@ -1590,22 +1673,35 @@ static inline void setup_usemap(struct zone *zone) {}
 
 #ifdef CONFIG_HUGETLB_PAGE_SIZE_VARIABLE
 
-/* Initialise the number of pages represented by NR_PAGEBLOCK_BITS */
+/*
+ * Initialise the number of pages represented by NR_PAGEBLOCK_BITS
+ * 初始化由NR_PAGEBLOCK_BITS表示的页面数量
+ */
 void __init set_pageblock_order(void)
 {
 	unsigned int order = MAX_PAGE_ORDER;
 
-	/* Check that pageblock_nr_pages has not already been setup */
+	/*
+	 * Check that pageblock_nr_pages has not already been setup
+	 * 检查pageblock_nr_pages有没有早就被设置
+	 */
 	if (pageblock_order)
 		return;
 
-	/* Don't let pageblocks exceed the maximum allocation granularity. */
+	/*
+	 * Don't let pageblocks exceed the maximum allocation granularity.
+	 *
+	 * 不要让页块超过最大分配粒度
+	 */
 	if (HPAGE_SHIFT > PAGE_SHIFT && HUGETLB_PAGE_ORDER < order)
 		order = HUGETLB_PAGE_ORDER;
 
 	/*
 	 * Assume the largest contiguous order of interest is a huge page.
 	 * This value may be variable depending on boot parameters on powerpc.
+	 *
+	 * 假设我们最关心的最大连续order是一个huge page.
+	 * 这个值在powerpc上可能会根据启动参数而变化.
 	 */
 	pageblock_order = order;
 }
@@ -1616,6 +1712,10 @@ void __init set_pageblock_order(void)
  * is unused as pageblock_order is set at compile-time. See
  * include/linux/pageblock-flags.h for the values of pageblock_order based on
  * the kernel config
+ *
+ * 当没有设置CONFIG_HUGETLB_PAGE_SIZE_VARIABLE时,set_pageblock_order()函数不会被使用,
+ * 因为pageblock_order在编译时就已经设置好了.
+ * 关于基于内核配置的pageblock_order的值,请参见include/linux/pageblock-flags.h文件
  */
 void __init set_pageblock_order(void)
 {
@@ -1637,6 +1737,7 @@ void __ref free_area_init_core_hotplug(struct pglist_data *pgdat)
 	enum zone_type z;
 	int cpu;
 
+	/* 这里还是初始化pgdata数据结构 */
 	pgdat_init_internals(pgdat);
 
 	if (pgdat->per_cpu_nodestats == &boot_nodestats)
@@ -1679,6 +1780,7 @@ static void __init free_area_init_core(struct pglist_data *pgdat)
 	enum zone_type j;
 	int nid = pgdat->node_id;
 
+	/* 这里还是初始化pgdata的数据结构 */
 	pgdat_init_internals(pgdat);
 	pgdat->per_cpu_nodestats = &boot_nodestats;
 
@@ -1796,32 +1898,38 @@ void __init get_pfn_range_for_nid(unsigned int nid,
 
 static void __init free_area_init_node(int nid)
 {
+	/* 拿到该节点的pg_data */
 	pg_data_t *pgdat = NODE_DATA(nid);
 	unsigned long start_pfn = 0;
 	unsigned long end_pfn = 0;
 
+	/* 如果pgdat的nr_zones和kswapd_highest_zoneidx被设置了,那么报个WARN */
 	/* pg_data_t should be reset to zero when it's allocated */
 	WARN_ON(pgdat->nr_zones || pgdat->kswapd_highest_zoneidx);
 
+	/* 拿到该node的起始pfn和结束pfn */
 	get_pfn_range_for_nid(nid, &start_pfn, &end_pfn);
 
 	pgdat->node_id = nid;
 	pgdat->node_start_pfn = start_pfn;
 	pgdat->per_cpu_nodestats = NULL;
 
+	/* 如果起始pfn不等于结束pfn,那么说明有内存,打印出来 */
 	if (start_pfn != end_pfn) {
 		pr_info("Initmem setup node %d [mem %#018Lx-%#018Lx]\n", nid,
 			(u64)start_pfn << PAGE_SHIFT,
 			end_pfn ? ((u64)end_pfn << PAGE_SHIFT) - 1 : 0);
-
+		/* 这里说的是计算node的totalpages,其实这里面也初始化了zone */
 		calculate_node_totalpages(pgdat, start_pfn, end_pfn);
 	} else {
 		pr_info("Initmem setup node %d as memoryless\n", nid);
 
+		/* 否则,都设置为0 */
 		reset_memoryless_node_totalpages(pgdat);
 	}
 
 	alloc_node_mem_map(pgdat);
+	/* 初始化pgdat->first_deferred_pfn = ULONG_MAX; */
 	pgdat_set_deferred_range(pgdat);
 
 	free_area_init_core(pgdat);
@@ -1848,6 +1956,8 @@ static void __init check_for_memory(pg_data_t *pgdat)
 #if MAX_NUMNODES > 1
 /*
  * Figure out the number of possible node ids.
+ *
+ * 计算出可能的节点ID的数量
  */
 void __init setup_nr_node_ids(void)
 {
@@ -1943,7 +2053,10 @@ void __init free_area_init(unsigned long *max_zone_pfn)
 	memset(zone_movable_pfn, 0, sizeof(zone_movable_pfn));
 	find_zone_movable_pfns_for_nodes();
 
-	/* Print out the zone ranges */
+	/*
+	 * Print out the zone ranges
+	 * 输出zone range(除了ZONE_MOVABLE)
+	 */
 	pr_info("Zone ranges:\n");
 	for (i = 0; i < MAX_NR_ZONES; i++) {
 		if (i == ZONE_MOVABLE)
@@ -1960,7 +2073,10 @@ void __init free_area_init(unsigned long *max_zone_pfn)
 					<< PAGE_SHIFT) - 1);
 	}
 
-	/* Print out the PFNs ZONE_MOVABLE begins at in each node */
+	/*
+	 * Print out the PFNs ZONE_MOVABLE begins at in each node
+	 * 打印出每个节点中ZONE_MOVABLE开始的页面帧号(PFNs)
+	 */
 	pr_info("Movable zone start for each node\n");
 	for (i = 0; i < MAX_NUMNODES; i++) {
 		if (zone_movable_pfn[i])
@@ -1972,8 +2088,12 @@ void __init free_area_init(unsigned long *max_zone_pfn)
 	 * Print out the early node map, and initialize the
 	 * subsection-map relative to active online memory ranges to
 	 * enable future "sub-section" extensions of the memory map.
+	 *
+	 * 打印出早期节点映射,并根据当前在线内存范围初始化子节映射,
+	 * 以便将来能够对内存映射进行“子节”扩展.
 	 */
 	pr_info("Early memory node ranges\n");
+	/* 输出每个memory block的region */
 	for_each_mem_pfn_range(i, MAX_NUMNODES, &start_pfn, &end_pfn, &nid) {
 		pr_info("  node %3d: [mem %#018Lx-%#018Lx]\n", nid,
 			(u64)start_pfn << PAGE_SHIFT,
@@ -1983,16 +2103,25 @@ void __init free_area_init(unsigned long *max_zone_pfn)
 
 	/* Initialise every node */
 	mminit_verify_pageflags_layout();
+	/* 设置nr_node_ids */
 	setup_nr_node_ids();
+	/* 设置pageblock的order */
 	set_pageblock_order();
 
+	/* 这里对每个node进行循环 */
 	for_each_node(nid) {
 		pg_data_t *pgdat;
 
+		/*
+		 * 如果node不是online的
+		 * 分配该node的pg_data数据结构
+		 */
 		if (!node_online(nid))
 			alloc_offline_node_data(nid);
 
+		/* 拿到该节点的pgdat */
 		pgdat = NODE_DATA(nid);
+		/* 初始化该node */
 		free_area_init_node(nid);
 
 		/*

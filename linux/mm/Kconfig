@@ -242,6 +242,17 @@ menu "Slab allocator options"
 config SLUB
 	def_bool y
 
+/*
+ * 配置 SLUB_TINY
+ * bool "为最小内存占用进行配置"
+ * 依赖于：EXPERT
+ * 选择：SLAB_MERGE_DEFAULT
+ *
+ * 帮助信息：
+ * 此选项以最小化内存占用为目标来配置slab分配器,
+ * 但会牺牲可扩展性、调试功能以及其他特性.
+ * 这仅适用于曾使用SLOB分配器的最小系统,对于内存超过16MB的系统,不建议使用.
+ */
 config SLUB_TINY
 	bool "Configure for minimal memory footprint"
 	depends on EXPERT
@@ -277,6 +288,16 @@ config SLAB_FREELIST_RANDOM
 	  security feature reduces the predictability of the kernel slab
 	  allocator against heap overflows.
 
+/*
+ * 配置选项：SLAB_FREELIST_HARDENED
+ * 类型: 布尔值(bool),即开启(y)或关闭(n)
+ * 描述：“强化 slab 自由列表元数据”
+ * 依赖: 此选项依赖于!SLUB_TINY,意味着当SLUB分配器配置为“tiny”模式时,此选项不可用.
+ *
+ * 帮助信息：
+ * 许多内核堆攻击都试图针对slab缓存元数据和其他基础设施.
+ * 此选项通过牺牲少量性能来增强内核slab分配器对常见自由列表利用方法的防护
+ */
 config SLAB_FREELIST_HARDENED
 	bool "Harden slab freelist metadata"
 	depends on !SLUB_TINY

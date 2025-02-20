@@ -265,11 +265,18 @@ struct kmem_cache {
 	unsigned int size;		/* Object size including metadata */
 	unsigned int object_size;	/* Object size without metadata */
 	struct reciprocal_value reciprocal_size;
+	/* 指向下一个freelist的便宜 */
 	unsigned int offset;		/* Free pointer offset */
 #ifdef CONFIG_SLUB_CPU_PARTIAL
-	/* Number of per cpu partial objects to keep around */
+	/*
+	 * Number of per cpu partial objects to keep around
+	 * 处理器中每个CPU的部分列表(per cpu partial lists)中所能保留的对象的最大数量
+	 */
 	unsigned int cpu_partial;
-	/* Number of per cpu partial slabs to keep around */
+	/*
+	 * Number of per cpu partial slabs to keep around
+	 * 在半满的情况下,我们能有多少多少个partial_slabs
+	 */
 	unsigned int cpu_partial_slabs;
 #endif
 	struct kmem_cache_order_objects oo;
@@ -279,6 +286,7 @@ struct kmem_cache {
 	gfp_t allocflags;		/* gfp flags to use on each alloc */
 	int refcount;			/* Refcount for slab cache destroy */
 	void (*ctor)(void *object);	/* Object constructor */
+	/* 这里应该是对象大小 + 对齐大小 + RED_ZONE */
 	unsigned int inuse;		/* Offset to metadata */
 	unsigned int align;		/* Alignment */
 	unsigned int red_left_pad;	/* Left redzone padding size */
@@ -294,11 +302,14 @@ struct kmem_cache {
 #ifdef CONFIG_NUMA
 	/*
 	 * Defragmentation by allocating from a remote node.
+	 *
+	 * 通过从远程节点分配来进行碎片整理
 	 */
 	unsigned int remote_node_defrag_ratio;
 #endif
 
 #ifdef CONFIG_SLAB_FREELIST_RANDOM
+	/* freelist的随机队列 */
 	unsigned int *random_seq;
 #endif
 

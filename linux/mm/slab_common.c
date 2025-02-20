@@ -90,6 +90,7 @@ static bool kmem_cache_is_duplicate_name(const char *name)
 {
 	struct kmem_cache *s;
 
+	/* 这里是找所有的slab_cache,看有没有同名的 */
 	list_for_each_entry(s, &slab_caches, list) {
 		if (!strcmp(s->name, name))
 			return true;
@@ -100,15 +101,23 @@ static bool kmem_cache_is_duplicate_name(const char *name)
 
 static int kmem_cache_sanity_check(const char *name, unsigned int size)
 {
+	/*
+	 * 如果name为空,在中断上下文中,大于KMALLOC_MAX_SIZE
+	 * #define KMALLOC_MAX_SIZE	(1UL << KMALLOC_SHIFT_MAX)
+	 * 那么就报个错误之后返回非法参数
+	 */
 	if (!name || in_interrupt() || size > KMALLOC_MAX_SIZE) {
 		pr_err("kmem_cache_create(%s) integrity check failed\n", name);
 		return -EINVAL;
 	}
 
-	/* Duplicate names will confuse slabtop, et al */
+	/*
+	 * Duplicate names will confuse slabtop, et al
+	 * 名称重复会使slabtop等工具感到困惑
+	 */
 	WARN(kmem_cache_is_duplicate_name(name),
 			"kmem_cache of name '%s' already exists\n", name);
-
+	/* 如果名字中有空字符,那么也报个警告 */
 	WARN_ON(strchr(name, ' '));	/* It confuses parsers */
 	return 0;
 }
@@ -122,6 +131,8 @@ static inline int kmem_cache_sanity_check(const char *name, unsigned int size)
 /*
  * Figure out what the alignment of the objects will be given a set of
  * flags, a user specified alignment and the size of the objects.
+ *
+ * 在给定一组标志、用户指定的对齐方式和对象大小的情况下,算出对象的对齐方式.
  */
 static unsigned int calculate_alignment(slab_flags_t flags,
 		unsigned int align, unsigned int size)
@@ -132,18 +143,33 @@ static unsigned int calculate_alignment(slab_flags_t flags,
 	 *
 	 * The hardware cache alignment cannot override the specified
 	 * alignment though. If that is greater then use it.
+	 *
+	 * 如果用户想要硬件cache对齐的对象,那么如果对象足够大,则遵循该建议
+	 *
+	 * 但是硬件cache对齐方式无法覆盖指定的对齐方式.如果更大,则使用它.
 	 */
+
+	/* 如果flags里面有HWCACHE对齐的标志 */
 	if (flags & SLAB_HWCACHE_ALIGN) {
 		unsigned int ralign;
-
+		/* #define cache_line_size()	L1_CACHE_BYTES */
 		ralign = cache_line_size();
+		/*
+		 * 这里就是cache_line_size / 2的循环直到size > ralign
+		 *
+		 * 也就是看看size需要在cache_line_size中占用多少(以一半为步伐)
+		 */
 		while (size <= ralign / 2)
 			ralign /= 2;
+
+		/* 算出align和ralign的最大值 */
 		align = max(align, ralign);
 	}
 
+	/* 如果align小于SLAB最小对齐的值,那么把最小对齐的值赋值给align */
 	align = max(align, arch_slab_minalign());
 
+	/* 让align对齐sizeof((void *)) */
 	return ALIGN(align, sizeof(void *));
 }
 
@@ -177,40 +203,67 @@ struct kmem_cache *find_mergeable(unsigned int size, unsigned int align,
 {
 	struct kmem_cache *s;
 
+	/* 如果内核启动参数slab_nomerge被设置了,那么返回NULL */
 	if (slab_nomerge)
 		return NULL;
 
+	/* 如果有构造函数,那么也返回NULL */
 	if (ctor)
 		return NULL;
 
+	/* 拿到flags */
 	flags = kmem_cache_flags(flags, name);
+	/*
+	 * flags有设置SLAB_NEVER_MERGE中的一个
+	 * #define SLAB_NEVER_MERGE (SLAB_RED_ZONE | SLAB_POISON | SLAB_STORE_USER | \
+	 * 			     SLAB_TRACE | SLAB_TYPESAFE_BY_RCU | SLAB_NOLEAKTRACE | \
+	 * 			     SLAB_FAILSLAB | SLAB_NO_MERGE)
+	 */
 
 	if (flags & SLAB_NEVER_MERGE)
 		return NULL;
 
+	/* 这里就是让size和字节大小对齐,AARCH64就是8 */
 	size = ALIGN(size, sizeof(void *));
+	/* 根据我们指定的对齐参数align并结合CPU cache line大小,计算出一个合适的对齐参数 */
 	align = calculate_alignment(flags, align, size);
+	/* 对象size 重新按照 align 进行对齐 */
 	size = ALIGN(size, align);
 
+	/* 然后查找整个slab_caches队列,看有没有合适的slab,不过他是从后往前 */
 	list_for_each_entry_reverse(s, &slab_caches, list) {
+		/* 如果slab是unmergeable的,那么continue */
 		if (slab_unmergeable(s))
 			continue;
 
+		/* 如果size比slab的size还要大,那么也不合适 */
 		if (size > s->size)
 			continue;
 
+		/*
+		 * 校验指定的flag中的SLAB_MERGE_SAME是否与已有slab cache中的flag一致
+		 *
+		 * #define SLAB_MERGE_SAME (SLAB_RECLAIM_ACCOUNT | SLAB_CACHE_DMA | \
+		 *		SLAB_NOTRACK | SLAB_ACCOUNT)
+		 */
 		if ((flags & SLAB_MERGE_SAME) != (s->flags & SLAB_MERGE_SAME))
 			continue;
 		/*
 		 * Check if alignment is compatible.
 		 * Courtesy of Adrian Drzewiecki
+		 *
+		 * 检查对齐是否兼容.
+		 * 由Adrian Drzewiecki提供
 		 */
+
 		if ((s->size & ~(align - 1)) != s->size)
 			continue;
 
+		/* 两者的 size 相差在一个 word size 之内 */
 		if (s->size - size >= sizeof(void *))
 			continue;
 
+		/* 查找到可以合并的已有 slab cache，不需要再创建新的 slab cache 了 */
 		return s;
 	}
 	return NULL;
@@ -224,8 +277,20 @@ static struct kmem_cache *create_cache(const char *name,
 	struct kmem_cache *s;
 	int err;
 
-	/* If a custom freelist pointer is requested make sure it's sane. */
+	/*
+	 * If a custom freelist pointer is requested make sure it's sane.
+	 *
+	 * 如果请求了一个自定义的freelist pointer,请确保它是合理的.
+	 */
 	err = -EINVAL;
+
+	/*
+	 * 如果use_freeprt_offset为true并且
+	 * freeptr_offset大于对象的大小
+	 * 或者flags中没有带有SLAB_TYPESAFE_BY_RCU
+	 * 或者args->freeptr_offset没有和__alignof__(freeptr_t)对齐
+	 * 那么返回-EINVAL
+	 */
 	if (args->use_freeptr_offset &&
 	    (args->freeptr_offset >= object_size ||
 	     !(flags & SLAB_TYPESAFE_BY_RCU) ||
@@ -233,14 +298,19 @@ static struct kmem_cache *create_cache(const char *name,
 		goto out;
 
 	err = -ENOMEM;
+	/* 分配kmem_cache结构体 */
 	s = kmem_cache_zalloc(kmem_cache, GFP_KERNEL);
 	if (!s)
 		goto out;
+
+	/* 初始化kmem_cache */
 	err = do_kmem_cache_create(s, name, object_size, args, flags);
 	if (err)
 		goto out_free_cache;
 
+	/* 设置kmem_cache的refcount为1 */
 	s->refcount = 1;
+	/* 把它添加到全局的slab_caches里面去 */
 	list_add(&s->list, &slab_caches);
 	return s;
 
@@ -276,6 +346,20 @@ out:
  * Context: Cannot be called within a interrupt, but can be interrupted.
  *
  * Return: a pointer to the cache on success, NULL on failure.
+ *
+ * __kmem_cache_create_args函数用于创建一个kmem cache.
+ *
+ * @name：一个字符串,用于在 /proc/slabinfo 中标识这个缓存.这个名称应该唯一,以便可以轻松地识别和监控缓存的性能.
+ * @object_size: 要在这个缓存中创建的对象的大小. 这个大小应该是固定的,因为所有从该缓存中分配的对象都将具有相同的大小.
+ * @args: 缓存创建时的附加参数(参见 &struct kmem_cache_args).这个参数结构体包含了如对象对齐要求、用户复制区域的大小和偏移量、构造函数等可选参数.
+ * 	  如果不需要这些附加功能,可以将此参数设置为NULL.
+ * @flags: 一个标志位集合,用于指定缓存的创建选项.常见的标志位包括:
+ *
+ * &SLAB_ACCOUNT: 将分配操作计入memcg(内存控制组).
+ * &SLAB_HWCACHE_ALIGN: 在cache line边界上对齐
+ * &SLAB_RECLAIM_ACCOUNT: 对象是可回收的. 这意味着当内存压力增大时,这些对象可以被内核回收以释放内存.
+ * &SLAB_TYPESAFE_BY_RCU: 延迟slab 页面(而不是单个对象)的释放,直到经过一个宽限期. 这个选项提供了更安全的内存释放机制,但增加了内存延迟释放的开销.
+ *
  */
 struct kmem_cache *__kmem_cache_create_args(const char *name,
 					    unsigned int object_size,
@@ -293,6 +377,10 @@ struct kmem_cache *__kmem_cache_create_args(const char *name,
 	 * created with any of the debugging flags passed explicitly.
 	 * It's also possible that this is the first cache created with
 	 * SLAB_STORE_USER and we should init stack_depot for it.
+	 *
+	 * 如果全局范围内没有启用slab_debug,那么setup_slub_debug()函数尚未启用相应的静态键(static key).
+	 * 如果在创建缓存时明确传递了任何调试标志位,则应启用该静态键.
+	 * 此外,如果这是使用SLAB_STORE_USER标志位创建的第一个缓存,我们还需要为其初始化stack_depot.
 	 */
 	if (flags & SLAB_DEBUG_FLAGS)
 		static_branch_enable(&slub_debug_enabled);
@@ -302,12 +390,36 @@ struct kmem_cache *__kmem_cache_create_args(const char *name,
 
 	mutex_lock(&slab_mutex);
 
+	/*
+	 * 入参检查,不能在中断中执行、cache名字不能为空,对象大小不能大于KMALLOC_MAX_SIZE字节,
+	 * kmallo一般情况下的上限是128K,
+	 * 但是如果打开了KMALLOC_MAX_SIZE这个宏,可以申请的内存会更大
+	 */
 	err = kmem_cache_sanity_check(name, object_size);
 	if (err) {
 		goto out_unlock;
 	}
 
-	/* Refuse requests with allocator specific flags */
+	/*
+	 * Refuse requests with allocator specific flags
+	 * 拒绝带有特定分配器标志的请求
+	 *
+	 * #define SLAB_FLAGS_PERMITTED (SLAB_CORE_FLAGS | \
+	 * 				 SLAB_RED_ZONE | \
+	 * 				 SLAB_POISON | \
+	 * 				 SLAB_STORE_USER | \
+	 * 				 SLAB_TRACE | \
+	 * 				 SLAB_CONSISTENCY_CHECKS | \
+	 * 				 SLAB_NOLEAKTRACE | \
+	 * 				 SLAB_RECLAIM_ACCOUNT | \
+	 * 				 SLAB_TEMPORARY | \
+	 * 				 SLAB_ACCOUNT | \
+	 * 				 SLAB_KMALLOC | \
+	 * 				 SLAB_NO_MERGE | \
+	 * 				 SLAB_NO_USER_FLAGS)
+	 */
+
+	/* 如果flags中还有其他的一些分配属性,那么就返回-EINVAL */
 	if (flags & ~SLAB_FLAGS_PERMITTED) {
 		err = -EINVAL;
 		goto out_unlock;
@@ -318,29 +430,54 @@ struct kmem_cache *__kmem_cache_create_args(const char *name,
 	 * of all flags. We expect them to define CACHE_CREATE_MASK in this
 	 * case, and we'll just provide them with a sanitized version of the
 	 * passed flags.
+	 *
+	 * 某些分配器会将有效标志集约束为所有标志的子集.
+	 * 在这种情况下,我们希望他们定义CACHE_CREATE_MASK,
+	 * 我们只为他们提供一个经过净化的传递标志版本.
+	 *
+	 * #define CACHE_CREATE_MASK (SLAB_CORE_FLAGS | SLAB_DEBUG_FLAGS | SLAB_CACHE_FLAGS)
 	 */
 	flags &= CACHE_CREATE_MASK;
 
-	/* Fail closed on bad usersize of useroffset values. */
+	/*
+	 * Fail closed on bad usersize of useroffset values.
+	 *
+	 * 在usersize或useroffset值错误时采取封闭失败策略.
+	 */
+
+	/*
+	 * 这里是如果没有使能CONFIG_HARDENED_USERCOPY
+	 * 或者args->usersize为0,但是args->useroffset不为0
+	 * 或者对象的大小比usersize还要小
+	 * 或者对象的大小减去args->usersize比useroffset还要小
+	 * 那么就设置usersize和useroffset都为0
+	 */
 	if (!IS_ENABLED(CONFIG_HARDENED_USERCOPY) ||
 	    WARN_ON(!args->usersize && args->useroffset) ||
 	    WARN_ON(object_size < args->usersize ||
 		    object_size - args->usersize < args->useroffset))
 		args->usersize = args->useroffset = 0;
 
+	/*
+	 * 如果args->usersize位0
+	 * 查找是否有现有的slab描述符可以复用,如果没有才通过do_kmem_cache_create来创建一个新的slab描述符
+	 */
 	if (!args->usersize)
 		s = __kmem_cache_alias(name, object_size, args->align, flags,
 				       args->ctor);
 	if (s)
 		goto out_unlock;
 
+	/* 分配一段空间,然后把name拷贝到这段空间里面去 */
 	cache_name = kstrdup_const(name, GFP_KERNEL);
 	if (!cache_name) {
 		err = -ENOMEM;
 		goto out_unlock;
 	}
 
+	/* 计算对齐的方式 */
 	args->align = calculate_alignment(flags, args->align, object_size);
+	/* 创建cache */
 	s = create_cache(cache_name, object_size, args, flags);
 	if (IS_ERR(s)) {
 		err = PTR_ERR(s);
@@ -1033,17 +1170,30 @@ gfp_t kmalloc_fix_flags(gfp_t flags)
 }
 
 #ifdef CONFIG_SLAB_FREELIST_RANDOM
-/* Randomize a generic freelist */
+/*
+ * Randomize a generic freelist
+ * 对通用空闲列表进行随机化
+ */
 static void freelist_randomize(unsigned int *list,
 			       unsigned int count)
 {
 	unsigned int rand;
 	unsigned int i;
-
+	/*
+	 * 从0 到 count - 1进行赋值
+	 * 让list[i] = i
+	 */
 	for (i = 0; i < count; i++)
 		list[i] = i;
 
-	/* Fisher-Yates shuffle */
+	/*
+	 * Fisher-Yates shuffle
+	 *
+	 * "Fisher-Yates shuffle" 翻译成中文是“费雪-耶茨洗牌算法”或简称“洗牌算法”. 这是一种在计算机科学中用于从一个有限集合中随机排列元素的算法.
+	 * 该算法由Ronald Fisher和Frank Yates在1938年提出,因此得名.
+	 * 费雪-耶茨洗牌算法通过遍历列表,并将当前元素与一个随机位置的元素进行交换,从而确保每个元素都有等概率出现在每个位置上,从而实现随机排列.
+	 * 这种算法在时间复杂度上是线性的,即O(n),并且是一种原地排序算法,因为它只需要常数级别的额外空间.
+	 */
 	for (i = count - 1; i > 0; i--) {
 		rand = get_random_u32_below(i + 1);
 		swap(list[i], list[rand]);
@@ -1055,13 +1205,16 @@ int cache_random_seq_create(struct kmem_cache *cachep, unsigned int count,
 				    gfp_t gfp)
 {
 
+	/* 如果count < 2 或者cachep_random_seq已经有了,那么返回0 */
 	if (count < 2 || cachep->random_seq)
 		return 0;
 
+	/* 否则分配random_seq */
 	cachep->random_seq = kcalloc(count, sizeof(unsigned int), gfp);
 	if (!cachep->random_seq)
 		return -ENOMEM;
 
+	/* 初始化randomize */
 	freelist_randomize(cachep->random_seq, count);
 	return 0;
 }

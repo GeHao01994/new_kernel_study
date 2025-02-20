@@ -18,6 +18,15 @@
  * slow-path with reciprocal_value(). The fast-path can then just use
  * a much faster multiplication operation with a variable dividend A
  * to calculate the division A/B.
+ *
+ * 该算法植根于Torbjörn Granlund与Peter L. Montgomery合著的论文《利用乘法实现不变整数的除法》.
+ *
+ * 本代码所借鉴的Agner Fog汇编实现版本,可访问以下链接获取:
+ * http://www.agner.org/optimize/asmlib.zip
+ *
+ * 当除数B在运行时大多保持不变时,此A/B除法优化策略尤为有效.
+ * 在慢速路径中,我们利用reciprocal_value()函数计算出B的倒数.
+ * 随后,在快速路径中,仅需通过一个更快速的乘法操作,配合可变的被除数A,即可轻松计算出A/B的除法结果.
  */
 
 struct reciprocal_value {
